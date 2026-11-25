@@ -335,7 +335,40 @@ function devePreservarAudioOriginal(caption = '') {
   );
 }
 
-async function enviarAudioSticker(sock, jid, webpPath, isAnimated, audioInfo = null) {
+function registrarIdEnviado(id) {
+  if (!id) return;
+  sentByBotIds.add(id);
+  setTimeout(() => sentByBotIds.delete(id), 60_000);
+}
+
+function construirContextInfoReply(sock, jid, quotedMsg) {
+  if (!quotedMsg?.key?.id || !quotedMsg?.message) return null;
+  const inner = desembrulharMensagem(quotedMsg.message);
+  if (!inner || typeof inner !== 'object') return null;
+  const msgType = ['stickerMessage', 'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage']
+    .find((t) => inner[t]);
+  if (!msgType) return null;
+
+  const rawParticipant = quotedMsg.key.fromMe
+    ? (jid.endsWith('@lid') ? sock.user?.lid || sock.user?.id : sock.user?.id)
+    : quotedMsg.participant || quotedMsg.key.participant || quotedMsg.key.remoteJid;
+  const participant = jidNormalizedUser(rawParticipant || jid);
+
+  const quotedContent = { ...inner[msgType] };
+  delete quotedContent.contextInfo;
+
+  const contextInfo = {
+    stanzaId: quotedMsg.key.id,
+    participant,
+    quotedMessage: proto.Message.create({ [msgType]: quotedContent })
+  };
+  if (quotedMsg.key.remoteJid && jid !== quotedMsg.key.remoteJid) {
+    contextInfo.remoteJid = quotedMsg.key.remoteJid;
+  }
+  return proto.ContextInfo.create(contextInfo);
+}
+
+async function enviarAudioSticker(sock, jid, webpPath, isAnimated, audioInfo = null, replyToMsg = null) {
   const { oggPath, duracao } = audioInfo || (await garantirAudioPronto());
 
   const stickerMedia = await prepareWAMessageMedia(
@@ -361,22 +394,42 @@ async function enviarAudioSticker(sock, jid, webpPath, isAnimated, audioInfo = n
   }
 
   const key = Buffer.from(stickerMedia.stickerMessage.fileSha256).toString('base64');
-  const messageId = '3EB0' + crypto.randomBytes(9).toString('hex').toUpperCase();
-
-  // Registra antes de enviar para impedir loop mesmo se o upsert chegar antes do resolve
-  sentByBotIds.add(messageId);
   pendingAudioStickers.set(key, audioMedia.audioMessage);
 
-  try {
+  const enviarComId = async () => {
+    const messageId = '3EB0' + crypto.randomBytes(9).toString('hex').toUpperCase();
+    // Registra antes de enviar para impedir loop mesmo se o upsert chegar antes do resolve
+    registrarIdEnviado(messageId);
     await sock.relayMessage(
       jid,
       { stickerMessage: stickerMedia.stickerMessage },
       { messageId }
     );
+    return messageId;
+  };
+
+  try {
+    let messageId;
+    if (replyToMsg) {
+      try {
+        const contextInfo = construirContextInfoReply(sock, jid, replyToMsg);
+        if (contextInfo) {
+          stickerMedia.stickerMessage.contextInfo = contextInfo;
+        }
+        messageId = await enviarComId();
+      } catch (replyErr) {
+        console.warn(
+          `⚠️  Falha ao enviar Audio Sticker como reply (${replyErr.message || replyErr}); enviando como nova mensagem...`
+        );
+        delete stickerMedia.stickerMessage.contextInfo;
+        messageId = await enviarComId();
+      }
+    } else {
+      messageId = await enviarComId();
+    }
     console.log(`✅ Audio Sticker (${isAnimated ? 'animado' : 'estático'}) enviado para ${jid} | ID: ${messageId}`);
   } finally {
     pendingAudioStickers.delete(key);
-    setTimeout(() => sentByBotIds.delete(messageId), 60_000);
   }
 }
 
@@ -424,8 +477,17 @@ function extrairOrigemAudio(content) {
 
 async function enviarTexto(sock, jid, text) {
   const sent = await sock.sendMessage(jid, { text });
-  if (sent?.key?.id) sentByBotIds.add(sent.key.id);
+  registrarIdEnviado(sent?.key?.id);
   return sent;
+}
+
+async function deletarMensagem(sock, jid, key) {
+  try {
+    const sent = await sock.sendMessage(jid, { delete: key });
+    registrarIdEnviado(sent?.key?.id);
+  } catch (err) {
+    console.warn(`⚠️  Não foi possível deletar mídia original (${err.message || err}).`);
+  }
 }
 
 async function prepararAudioDeOrigem(sock, msgRef, audioSource, tempRawPath, outOggPath, maxSeconds = MAX_AUDIO_SECONDS) {
@@ -499,7 +561,12 @@ async function processarMidiaRecebida(sock, m, content, options = {}) {
     let isAnimated = false;
     let audioInfo = null;
     let duracaoMax = MAX_AUDIO_SECONDS;
-    const { customAudioMsg = null, customAudioSource = null } = options;
+    const {
+      customAudioMsg = null,
+      customAudioSource = null,
+      replyToMsg = null,
+      deleteMsgKey = null
+    } = options;
 
     if (content.stickerMessage) {
       if (content.stickerMessage.isLottie) {
@@ -564,7 +631,10 @@ async function processarMidiaRecebida(sock, m, content, options = {}) {
 
     const kb = (fs.statSync(tempWebp).size / 1024).toFixed(1);
     console.log(`📦 WebP pronto (${kb} KB). Enviando com áudio...`);
-    await enviarAudioSticker(sock, jid, tempWebp, isAnimated, audioInfo);
+    await enviarAudioSticker(sock, jid, tempWebp, isAnimated, audioInfo, replyToMsg);
+    if (deleteMsgKey) {
+      await deletarMensagem(sock, jid, deleteMsgKey);
+    }
   } catch (err) {
     console.error('❌ Erro ao processar mídia:', err.message || err);
     if (err?.cause) {
@@ -613,7 +683,8 @@ async function iniciar() {
 
       // Em chats com terceiros/grupos, ignora mensagens enviadas por você (fromMe),
       // mantendo comandos e mídias próprios liberados apenas na conversa consigo mesmo
-      if (m.key.fromMe && !ehChatProprio(sock, state, jid)) continue;
+      const ehProprio = ehChatProprio(sock, state, jid);
+      if (m.key.fromMe && !ehProprio) continue;
 
       // Ignora mensagens antigas de histórico sincronizado
       const ts = Number(m.messageTimestamp || 0);
@@ -706,6 +777,7 @@ async function iniciar() {
       }
 
       const quoted = obterMensagemCitada(jid, extrairContextInfo(content));
+      const entregaOpts = ehProprio ? { deleteMsgKey: m.key } : { replyToMsg: m };
 
       if (extrairMidiaVisual(content)) {
         const quotedAudio = quoted ? extrairOrigemAudio(quoted.content) : null;
@@ -713,7 +785,10 @@ async function iniciar() {
           sock,
           m,
           content,
-          quotedAudio ? { customAudioMsg: { key: quoted.key }, customAudioSource: quotedAudio } : {}
+          {
+            ...entregaOpts,
+            ...(quotedAudio ? { customAudioMsg: { key: quoted.key }, customAudioSource: quotedAudio } : {})
+          }
         );
         continue;
       }
@@ -724,7 +799,7 @@ async function iniciar() {
           sock,
           { key: quoted.key, message: quoted.content },
           quoted.content,
-          { customAudioMsg: m, customAudioSource: audioMsgSource }
+          { ...entregaOpts, customAudioMsg: m, customAudioSource: audioMsgSource }
         );
       }
     }
