@@ -96,6 +96,58 @@ proto.Message.encode = function (message, writer) {
   return origEncode(message, writer);
 };
 
+// Hook no decode: WAProto atual ignora a tag 134 (Audio Sticker), então extrai o stickerMessage interno
+function extrairStickerDeTag134(rawBytes) {
+  const r = protobuf.Reader.create(rawBytes);
+  while (r.pos < r.len) {
+    const tag = r.uint32();
+    const fieldNo = tag >>> 3;
+    const wireType = tag & 7;
+    if (fieldNo === 134 && wireType === 2) {
+      const futureProofBytes = r.bytes();
+      const fp = proto.Message.FutureProofMessage.decode(futureProofBytes);
+      if (fp?.message?.stickerMessage) {
+        return fp.message.stickerMessage;
+      }
+      continue;
+    }
+    r.skipType(wireType);
+  }
+  return null;
+}
+
+const origDecode = proto.Message.decode.bind(proto.Message);
+proto.Message.decode = function (reader, length, endTag) {
+  let rawBytes = null;
+  let startPos = 0;
+
+  if (reader instanceof Uint8Array) {
+    rawBytes = length === undefined ? reader : reader.subarray(0, length);
+  } else if (reader && reader.buf instanceof Uint8Array) {
+    startPos = reader.pos;
+  }
+
+  const decoded = origDecode(reader, length, endTag);
+
+  if (!decoded.stickerMessage) {
+    if (!rawBytes && reader && reader.buf instanceof Uint8Array) {
+      rawBytes = reader.buf.subarray(startPos, reader.pos);
+    }
+    if (rawBytes && rawBytes.length > 0) {
+      try {
+        const sticker = extrairStickerDeTag134(rawBytes);
+        if (sticker) {
+          decoded.stickerMessage = sticker;
+        }
+      } catch {
+        // Ignora caso a tag 134 não siga o layout esperado
+      }
+    }
+  }
+
+  return decoded;
+};
+
 async function obterDuracaoSegundos(arquivo) {
   try {
     const { stdout } = await execFileAsync('ffprobe', [
