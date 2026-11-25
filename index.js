@@ -481,12 +481,22 @@ async function enviarTexto(sock, jid, text) {
   return sent;
 }
 
-async function deletarMensagem(sock, jid, key) {
+async function deletarParaMim(sock, jid, msg) {
+  if (!msg?.key?.id) return;
   try {
-    const sent = await sock.sendMessage(jid, { delete: key });
-    registrarIdEnviado(sent?.key?.id);
+    const timestamp = Number(msg.messageTimestamp || 0) || Math.floor(Date.now() / 1000);
+    await sock.chatModify(
+      {
+        deleteForMe: {
+          deleteMedia: true,
+          key: msg.key,
+          timestamp
+        }
+      },
+      jid
+    );
   } catch (err) {
-    console.warn(`⚠️  Não foi possível deletar mídia original (${err.message || err}).`);
+    console.warn(`⚠️  Não foi possível apagar mídia para mim (${err.message || err}).`);
   }
 }
 
@@ -565,7 +575,7 @@ async function processarMidiaRecebida(sock, m, content, options = {}) {
       customAudioMsg = null,
       customAudioSource = null,
       replyToMsg = null,
-      deleteMsgKey = null
+      deleteForMeMsg = null
     } = options;
 
     if (content.stickerMessage) {
@@ -632,8 +642,8 @@ async function processarMidiaRecebida(sock, m, content, options = {}) {
     const kb = (fs.statSync(tempWebp).size / 1024).toFixed(1);
     console.log(`📦 WebP pronto (${kb} KB). Enviando com áudio...`);
     await enviarAudioSticker(sock, jid, tempWebp, isAnimated, audioInfo, replyToMsg);
-    if (deleteMsgKey) {
-      await deletarMensagem(sock, jid, deleteMsgKey);
+    if (deleteForMeMsg) {
+      await deletarParaMim(sock, jid, deleteForMeMsg);
     }
   } catch (err) {
     console.error('❌ Erro ao processar mídia:', err.message || err);
@@ -777,7 +787,7 @@ async function iniciar() {
       }
 
       const quoted = obterMensagemCitada(jid, extrairContextInfo(content));
-      const entregaOpts = ehProprio ? { deleteMsgKey: m.key } : { replyToMsg: m };
+      const entregaOpts = ehProprio ? { deleteForMeMsg: m } : { replyToMsg: m };
 
       if (extrairMidiaVisual(content)) {
         const quotedAudio = quoted ? extrairOrigemAudio(quoted.content) : null;

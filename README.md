@@ -60,7 +60,7 @@ pm2 logs audio-sticker
 - **Figurinhas (estáticas, animadas ou Audio Stickers):** reaproveita o `.webp` original e acopla o áudio configurado (figurinhas Lottie são ignoradas).
 - **Imagens:** converte para WebP 512×512 (`-lossless 1`).
 - **Vídeos:** converte para WebP animado 512×512 (até 5s, 15 fps; recomprime automaticamente para 10 fps / 4s se ultrapassar 490 KB).
-- **Entrega:** em conversas com terceiros/grupos, responde (reply) à mensagem original (com fallback para nova mensagem caso o reply falhe); na conversa consigo mesmo, remove a mídia enviada após gerar o sticker para manter o chat limpo.
+- **Entrega:** em conversas com terceiros/grupos, responde (reply) à mensagem original (com fallback para nova mensagem caso o reply falhe); na conversa consigo mesmo, apaga apenas para você (`deleteForMe`) a mídia enviada após gerar o sticker, mantendo o chat limpo sem aviso de mensagem apagada.
 
 ### Usando outro áudio (sem alterar `./media/som.mp3`)
 
