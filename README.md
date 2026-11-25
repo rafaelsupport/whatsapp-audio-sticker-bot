@@ -73,7 +73,10 @@ pm2 logs audio-sticker
 - **Modo de corte** (imagens e vídeos, combinável com `original` em vídeos):
   - `inteiro` (padrão) — redimensiona mantendo tudo com fundo transparente.
   - `centro` ou `corte` — recorta centralizado em 512×512.
+  - `esquerda` — recorta alinhado à esquerda em 512×512.
   - `direita` — recorta alinhado à direita em 512×512.
+  - `cima` ou `topo` — recorta alinhado ao topo em 512×512.
+  - `baixo` ou `embaixo` — recorta alinhado à base em 512×512.
 
 ## Utilitário de engenharia reversa
 

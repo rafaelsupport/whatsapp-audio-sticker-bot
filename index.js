@@ -29,7 +29,7 @@ const CACHE_OGG = path.resolve('./media/_cache_audio.ogg');
 const CHATS_DB = path.resolve('./chats_ativos.json');
 const MAX_AUDIO_SECONDS = 5;
 const MAX_VIDEO_SECONDS = 5;
-const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'direita'
+const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'esquerda' | 'direita' | 'cima' | 'baixo'
 // ================================================
 
 const silentLogger = P({ level: 'silent' });
@@ -233,13 +233,19 @@ async function garantirAudioPronto() {
   return { oggPath: CACHE_OGG, duracao };
 }
 
+const MODOS_CORTE_CROP = {
+  esquerda: '0:(ih-512)/2',
+  direita: 'iw-512:(ih-512)/2',
+  cima: '(iw-512)/2:0',
+  baixo: '(iw-512)/2:ih-512',
+  centro: '(iw-512)/2:(ih-512)/2'
+};
+
 function filtroEscala(modo, isVideo) {
   const fps = isVideo ? 'fps=15,' : '';
-  if (modo === 'direita') {
-    return `${fps}scale=512:512:force_original_aspect_ratio=increase,crop=512:512:iw-512:0`;
-  }
-  if (modo === 'centro') {
-    return `${fps}scale=512:512:force_original_aspect_ratio=increase,crop=512:512`;
+  const cropPos = MODOS_CORTE_CROP[modo];
+  if (cropPos) {
+    return `${fps}scale=512:512:force_original_aspect_ratio=increase,crop=512:512:${cropPos}`;
   }
   return `${fps}scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
 }
@@ -297,11 +303,22 @@ function extrairTexto(content) {
   ).trim();
 }
 
+const ALIAS_MODOS_CORTE = [
+  ['esquerda', 'esquerda'],
+  ['direita', 'direita'],
+  ['cima', 'cima'],
+  ['topo', 'cima'],
+  ['baixo', 'baixo'],
+  ['centro', 'centro'],
+  ['corte', 'centro'],
+  ['inteiro', 'inteiro']
+];
+
 function detectarModoCorte(caption = '') {
   const c = (caption || '').toLowerCase();
-  if (c.includes('direita')) return 'direita';
-  if (c.includes('corte') || c.includes('centro')) return 'centro';
-  if (c.includes('inteiro')) return 'inteiro';
+  for (const [termo, modo] of ALIAS_MODOS_CORTE) {
+    if (c.includes(termo)) return modo;
+  }
   return MODO_CORTE_PADRAO;
 }
 
@@ -619,7 +636,7 @@ async function iniciar() {
         await enviarTexto(
           sock,
           jid,
-          '✅ Fábrica de figurinhas com áudio *ATIVADA* neste chat.\nEnvie figurinhas, imagens ou vídeos.\n• Legenda (imagem/vídeo): `centro`, `direita` ou `inteiro`\n• Áudio do próprio vídeo: adicione `original` na legenda\n• Áudio personalizado: responda um áudio com a mídia (ou responda a mídia com um áudio), ou responda um áudio com `!audio` (`!audio padrao` para voltar)\nUse `!desativar` para desligar.'
+          '✅ Fábrica de figurinhas com áudio *ATIVADA* neste chat.\nEnvie figurinhas, imagens ou vídeos.\n• Legenda (imagem/vídeo): `inteiro`, `centro`, `esquerda`, `direita`, `cima` ou `baixo`\n• Áudio do próprio vídeo: adicione `original` na legenda\n• Áudio personalizado: responda um áudio com a mídia (ou responda a mídia com um áudio), ou responda um áudio com `!audio` (`!audio padrao` para voltar)\nUse `!desativar` para desligar.'
         );
         continue;
       }
