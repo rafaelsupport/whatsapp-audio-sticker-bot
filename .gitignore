@@ -1,0 +1,16 @@
+# Dependências, config local do npm e logs
+node_modules/
+.npmrc
+npm-debug.log*
+
+# Sessão do WhatsApp e estado em runtime
+auth/
+chats_ativos.json
+
+# Scripts antigos/backup locais
+aindex.js
+indexo.js
+
+# Ignora mídias de teste, caches e temporários, mantendo apenas o som padrão
+media/*
+!media/som.mp3
