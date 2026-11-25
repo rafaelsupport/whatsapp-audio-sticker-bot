@@ -7,6 +7,7 @@ import makeWASocket, {
   DisconnectReason,
   prepareWAMessageMedia,
   downloadMediaMessage,
+  jidNormalizedUser,
   proto
 } from '@whiskeysockets/baileys';
 import { createRequire } from 'module';
@@ -559,6 +560,17 @@ async function processarMidiaRecebida(sock, m, content, options = {}) {
   }
 }
 
+function ehChatProprio(sock, state, jid) {
+  const normJid = jidNormalizedUser(jid);
+  if (!normJid) return false;
+  const meId = sock.user?.id || state.creds?.me?.id;
+  const meLid = sock.user?.lid || state.creds?.me?.lid;
+  return Boolean(
+    (meId && normJid === jidNormalizedUser(meId)) ||
+    (meLid && normJid === jidNormalizedUser(meLid))
+  );
+}
+
 async function iniciar() {
   await garantirAudioPronto();
 
@@ -581,6 +593,10 @@ async function iniciar() {
       const jid = m.key?.remoteJid;
       if (!id || !jid || !m.message) continue;
       if (sentByBotIds.has(id) || processedIds.has(id)) continue;
+
+      // Em chats com terceiros/grupos, ignora mensagens enviadas por você (fromMe),
+      // mantendo comandos e mídias próprios liberados apenas na conversa consigo mesmo
+      if (m.key.fromMe && !ehChatProprio(sock, state, jid)) continue;
 
       // Ignora mensagens antigas de histórico sincronizado
       const ts = Number(m.messageTimestamp || 0);
