@@ -33,6 +33,8 @@ const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'direita'
 
 const silentLogger = P({ level: 'silent' });
 const pendingAudioStickers = new Map();
+const chatCustomAudios = new Map();
+const embeddedAudios = new WeakMap();
 const sentByBotIds = new Set();
 const processedIds = new Set();
 const startTimeSec = Math.floor(Date.now() / 1000);
@@ -96,22 +98,48 @@ proto.Message.encode = function (message, writer) {
   return origEncode(message, writer);
 };
 
-// Hook no decode: WAProto atual ignora a tag 134 (Audio Sticker), então extrai o stickerMessage interno
-function extrairStickerDeTag134(rawBytes) {
-  const r = protobuf.Reader.create(rawBytes);
+function lerCamposBytes(buf, targetFieldNo) {
+  const results = [];
+  const r = protobuf.Reader.create(buf);
   while (r.pos < r.len) {
     const tag = r.uint32();
     const fieldNo = tag >>> 3;
     const wireType = tag & 7;
-    if (fieldNo === 134 && wireType === 2) {
-      const futureProofBytes = r.bytes();
-      const fp = proto.Message.FutureProofMessage.decode(futureProofBytes);
-      if (fp?.message?.stickerMessage) {
-        return fp.message.stickerMessage;
-      }
-      continue;
+    if (fieldNo === targetFieldNo && wireType === 2) {
+      results.push(r.bytes());
+    } else {
+      r.skipType(wireType);
     }
-    r.skipType(wireType);
+  }
+  return results;
+}
+
+function extrairAudioEmbutidoTag134(futureProofBytes) {
+  try {
+    for (const innerBytes of lerCamposBytes(futureProofBytes, 1)) {
+      for (const stickerBytes of lerCamposBytes(innerBytes, 26)) {
+        for (const audioBytes of lerCamposBytes(stickerBytes, 26)) {
+          return proto.Message.AudioMessage.decode(audioBytes);
+        }
+      }
+    }
+  } catch {
+    // Ignora se o áudio interno não for decodificável
+  }
+  return null;
+}
+
+// Hook no decode: WAProto atual ignora a tag 134 (Audio Sticker), então extrai o stickerMessage interno
+function extrairStickerDeTag134(rawBytes) {
+  for (const futureProofBytes of lerCamposBytes(rawBytes, 134)) {
+    const fp = proto.Message.FutureProofMessage.decode(futureProofBytes);
+    if (fp?.message?.stickerMessage) {
+      const audioMsg = extrairAudioEmbutidoTag134(futureProofBytes);
+      if (audioMsg) {
+        embeddedAudios.set(fp.message.stickerMessage, audioMsg);
+      }
+      return fp.message.stickerMessage;
+    }
   }
   return null;
 }
@@ -334,14 +362,67 @@ async function enviarAudioSticker(sock, jid, webpPath, isAnimated, audioInfo = n
   }
 }
 
+function extrairContextInfo(content) {
+  for (const key of ['extendedTextMessage', 'stickerMessage', 'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage']) {
+    if (content?.[key]?.contextInfo) return content[key].contextInfo;
+  }
+  return null;
+}
+
+function obterMensagemCitada(jid, contextInfo) {
+  if (!contextInfo?.quotedMessage) return null;
+  return {
+    key: {
+      remoteJid: jid,
+      id: contextInfo.stanzaId,
+      participant: contextInfo.participant
+    },
+    content: desembrulharMensagem(contextInfo.quotedMessage)
+  };
+}
+
+function extrairMidiaVisual(content) {
+  if (content?.stickerMessage) return { type: 'stickerMessage', media: content.stickerMessage };
+  if (content?.imageMessage) return { type: 'imageMessage', media: content.imageMessage };
+  if (content?.videoMessage) return { type: 'videoMessage', media: content.videoMessage };
+  return null;
+}
+
+function extrairOrigemAudio(content) {
+  if (content?.audioMessage) {
+    return { msgContent: { audioMessage: content.audioMessage }, isVideo: false, label: 'áudio' };
+  }
+  if (content?.documentMessage?.mimetype?.startsWith('audio/')) {
+    return { msgContent: { documentMessage: content.documentMessage }, isVideo: false, label: 'arquivo de áudio' };
+  }
+  if (content?.videoMessage) {
+    return { msgContent: { videoMessage: content.videoMessage }, isVideo: true, label: 'áudio do vídeo' };
+  }
+  if (content?.stickerMessage && embeddedAudios.has(content.stickerMessage)) {
+    return { msgContent: { audioMessage: embeddedAudios.get(content.stickerMessage) }, isVideo: false, label: 'áudio do sticker' };
+  }
+  return null;
+}
+
+async function enviarTexto(sock, jid, text) {
+  const sent = await sock.sendMessage(jid, { text });
+  if (sent?.key?.id) sentByBotIds.add(sent.key.id);
+  return sent;
+}
+
+async function prepararAudioDeOrigem(sock, msgRef, audioSource, tempRawPath, outOggPath, maxSeconds = MAX_AUDIO_SECONDS) {
+  const audioBuffer = await baixarMidia(sock, msgRef, audioSource.msgContent);
+  fs.writeFileSync(tempRawPath, audioBuffer);
+  if (audioSource.isVideo && !(await videoTemAudio(tempRawPath))) {
+    return null;
+  }
+  const duracao = await converterParaAudioOgg(tempRawPath, outOggPath, maxSeconds);
+  return { oggPath: outOggPath, duracao };
+}
+
 async function baixarMidia(sock, m, content) {
-  const mediaType = content?.stickerMessage
-    ? 'stickerMessage'
-    : content?.imageMessage
-      ? 'imageMessage'
-      : content?.videoMessage
-        ? 'videoMessage'
-        : null;
+  const mediaType = ['stickerMessage', 'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage']
+    .find((type) => content?.[type]);
   const media = mediaType ? content[mediaType] : null;
 
   try {
@@ -386,11 +467,12 @@ async function baixarMidia(sock, m, content) {
   }
 }
 
-async function processarMidiaRecebida(sock, m, content) {
+async function processarMidiaRecebida(sock, m, content, options = {}) {
   const jid = m.key.remoteJid;
   const uid = `${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const tempIn = path.resolve(`./media/_tmp_in_${uid}`);
   const tempWebp = path.resolve(`./media/_tmp_out_${uid}.webp`);
+  const tempAudioIn = path.resolve(`./media/_tmp_audio_in_${uid}`);
   const tempOgg = path.resolve(`./media/_tmp_audio_${uid}.ogg`);
 
   try {
@@ -398,6 +480,8 @@ async function processarMidiaRecebida(sock, m, content) {
 
     let isAnimated = false;
     let audioInfo = null;
+    let duracaoMax = MAX_AUDIO_SECONDS;
+    const { customAudioMsg = null, customAudioSource = null } = options;
 
     if (content.stickerMessage) {
       if (content.stickerMessage.isLottie) {
@@ -407,7 +491,7 @@ async function processarMidiaRecebida(sock, m, content) {
       // Reaproveita o WebP original diretamente (estático ou animado)
       isAnimated = Boolean(content.stickerMessage.isAnimated) || buffer.includes(Buffer.from('ANIM'));
       fs.writeFileSync(tempWebp, buffer);
-      console.log(`🧩 Sticker ${isAnimated ? 'animado' : 'estático'} recebido -> acoplando som.mp3...`);
+      console.log(`🧩 Sticker ${isAnimated ? 'animado' : 'estático'} recebido -> preparando áudio...`);
     } else if (content.imageMessage) {
       const modo = detectarModoCorte(content.imageMessage.caption);
       fs.writeFileSync(tempIn, buffer);
@@ -417,23 +501,47 @@ async function processarMidiaRecebida(sock, m, content) {
     } else if (content.videoMessage) {
       const caption = content.videoMessage.caption;
       const modo = detectarModoCorte(caption);
-      const preservarAudio = devePreservarAudioOriginal(caption);
+      const preservarAudio = !customAudioSource && devePreservarAudioOriginal(caption);
       fs.writeFileSync(tempIn, buffer);
       console.log(
-        `🎬 Vídeo recebido (modo: ${modo} | áudio: ${preservarAudio ? 'original' : 'som.mp3'}) -> convertendo para WebP animado...`
+        `🎬 Vídeo recebido (modo: ${modo} | áudio: ${customAudioSource ? customAudioSource.label : preservarAudio ? 'original' : 'padrão'}) -> convertendo para WebP animado...`
       );
-      const duracaoVideo = await converterVideoParaWebp(tempIn, tempWebp, modo);
+      duracaoMax = await converterVideoParaWebp(tempIn, tempWebp, modo);
       if (preservarAudio) {
         if (await videoTemAudio(tempIn)) {
-          const duracao = await converterParaAudioOgg(tempIn, tempOgg, duracaoVideo);
+          const duracao = await converterParaAudioOgg(tempIn, tempOgg, duracaoMax);
           audioInfo = { oggPath: tempOgg, duracao };
         } else {
-          console.warn('⚠️  Vídeo sem faixa de áudio original; usando som.mp3 padrão.');
+          console.warn('⚠️  Vídeo sem faixa de áudio original; usando áudio padrão.');
         }
       }
       isAnimated = true;
     } else {
       return;
+    }
+
+    if (customAudioSource) {
+      console.log(`🎵 Baixando ${customAudioSource.label} personalizado...`);
+      audioInfo = await prepararAudioDeOrigem(
+        sock,
+        customAudioMsg || m,
+        customAudioSource,
+        tempAudioIn,
+        tempOgg,
+        duracaoMax
+      );
+      if (!audioInfo) {
+        console.warn('⚠️  Mídia de áudio citada não possui trilha de áudio; usando áudio padrão.');
+      }
+    }
+
+    if (!audioInfo && chatCustomAudios.has(jid)) {
+      const chatAudio = chatCustomAudios.get(jid);
+      if (fs.existsSync(chatAudio.oggPath)) {
+        audioInfo = chatAudio;
+      } else {
+        chatCustomAudios.delete(jid);
+      }
     }
 
     const kb = (fs.statSync(tempWebp).size / 1024).toFixed(1);
@@ -445,7 +553,7 @@ async function processarMidiaRecebida(sock, m, content) {
       console.error('   ↳ cause:', err.cause);
     }
   } finally {
-    for (const file of [tempIn, tempWebp, tempOgg]) {
+    for (const file of [tempIn, tempWebp, tempAudioIn, tempOgg]) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
     }
   }
@@ -492,10 +600,11 @@ async function iniciar() {
         chatsAtivos.add(jid);
         salvarChatsAtivos(chatsAtivos);
         console.log(`✅ Fábrica ativada no chat: ${jid}`);
-        const sent = await sock.sendMessage(jid, {
-          text: '✅ Fábrica de figurinhas com áudio *ATIVADA* neste chat.\nEnvie figurinhas, imagens ou vídeos (legenda opcional: `centro`, `direita` ou `inteiro`; em vídeos, adicione `original` para preservar o áudio do vídeo).\nUse `!desativar` para desligar.'
-        });
-        if (sent?.key?.id) sentByBotIds.add(sent.key.id);
+        await enviarTexto(
+          sock,
+          jid,
+          '✅ Fábrica de figurinhas com áudio *ATIVADA* neste chat.\nEnvie figurinhas, imagens ou vídeos.\n• Legenda (imagem/vídeo): `centro`, `direita` ou `inteiro`\n• Áudio do próprio vídeo: adicione `original` na legenda\n• Áudio personalizado: responda um áudio com a mídia (ou responda a mídia com um áudio), ou responda um áudio com `!audio` (`!audio padrao` para voltar)\nUse `!desativar` para desligar.'
+        );
         continue;
       }
 
@@ -503,17 +612,87 @@ async function iniciar() {
         chatsAtivos.delete(jid);
         salvarChatsAtivos(chatsAtivos);
         console.log(`🛑 Fábrica desativada no chat: ${jid}`);
-        const sent = await sock.sendMessage(jid, {
-          text: '🛑 Fábrica de figurinhas *DESATIVADA* neste chat.'
-        });
-        if (sent?.key?.id) sentByBotIds.add(sent.key.id);
+        await enviarTexto(sock, jid, '🛑 Fábrica de figurinhas *DESATIVADA* neste chat.');
         continue;
       }
 
       if (!chatsAtivos.has(jid)) continue;
 
-      if (content?.stickerMessage || content?.imageMessage || content?.videoMessage) {
-        processarMidiaRecebida(sock, m, content);
+      if (['!audio padrao', '!audio padrão', '!audio reset', '!audio limpar', '!som padrao', '!som padrão'].includes(texto)) {
+        const anterior = chatCustomAudios.get(jid);
+        chatCustomAudios.delete(jid);
+        if (anterior?.oggPath && fs.existsSync(anterior.oggPath)) {
+          fs.unlinkSync(anterior.oggPath);
+        }
+        await enviarTexto(sock, jid, '🔊 Este chat voltou a usar o *som.mp3* padrão.');
+        continue;
+      }
+
+      if (texto === '!audio' || texto === '!som') {
+        const quoted = obterMensagemCitada(jid, extrairContextInfo(content));
+        const audioSource = quoted ? extrairOrigemAudio(quoted.content) : null;
+        if (!audioSource) {
+          await enviarTexto(
+            sock,
+            jid,
+            'ℹ️ Para usar outro áudio neste chat:\n• *Responda* um áudio (ou vídeo/audio-sticker) com `!audio` para fixá-lo temporariamente aqui\n• Ou *responda* um áudio diretamente enviando a imagem/vídeo/figurinha (e vice-versa)\n• Use `!audio padrao` para voltar ao `som.mp3`.'
+          );
+          continue;
+        }
+
+        const safeJid = jid.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const tempRaw = path.resolve(`./media/_tmp_chat_audio_${safeJid}_${Date.now()}`);
+        const chatOgg = path.resolve(`./media/_chat_audio_${safeJid}.ogg`);
+        try {
+          const info = await prepararAudioDeOrigem(
+            sock,
+            { key: quoted.key },
+            audioSource,
+            tempRaw,
+            chatOgg,
+            MAX_AUDIO_SECONDS
+          );
+          if (!info) {
+            await enviarTexto(sock, jid, '⚠️ O vídeo respondido não possui faixa de áudio.');
+            continue;
+          }
+          chatCustomAudios.set(jid, info);
+          console.log(`🎵 Áudio personalizado definido para ${jid} (${info.duracao}s)`);
+          await enviarTexto(
+            sock,
+            jid,
+            `🔊 Áudio personalizado definido para este chat (${info.duracao}s)! As próximas figurinhas aqui usarão esse áudio.\nUse \`!audio padrao\` para voltar ao \`som.mp3\`.`
+          );
+        } catch (err) {
+          console.error('❌ Erro ao definir áudio personalizado:', err.message || err);
+          await enviarTexto(sock, jid, '❌ Não consegui baixar/converter esse áudio.');
+        } finally {
+          if (fs.existsSync(tempRaw)) fs.unlinkSync(tempRaw);
+        }
+        continue;
+      }
+
+      const quoted = obterMensagemCitada(jid, extrairContextInfo(content));
+
+      if (extrairMidiaVisual(content)) {
+        const quotedAudio = quoted ? extrairOrigemAudio(quoted.content) : null;
+        processarMidiaRecebida(
+          sock,
+          m,
+          content,
+          quotedAudio ? { customAudioMsg: { key: quoted.key }, customAudioSource: quotedAudio } : {}
+        );
+        continue;
+      }
+
+      const audioMsgSource = extrairOrigemAudio(content);
+      if (audioMsgSource && !audioMsgSource.isVideo && quoted && extrairMidiaVisual(quoted.content)) {
+        processarMidiaRecebida(
+          sock,
+          { key: quoted.key, message: quoted.content },
+          quoted.content,
+          { customAudioMsg: m, customAudioSource: audioMsgSource }
+        );
       }
     }
   });

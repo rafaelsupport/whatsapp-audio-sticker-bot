@@ -52,22 +52,28 @@ pm2 logs audio-sticker
 
 - `!ativar` — habilita o bot no chat atual (salvo em `chats_ativos.json`).
 - `!desativar` — desabilita o bot no chat atual.
+- `!audio` (ou `!som`) respondendo a um áudio, arquivo de áudio, vídeo com som ou Audio Sticker — define temporariamente esse áudio como padrão apenas para este chat.
+- `!audio padrao` (ou `!audio reset`) — faz o chat voltar a usar `./media/som.mp3`.
 
 ### Mídias suportadas (em chats ativados)
 
-- **Figurinhas (estáticas ou animadas):** reaproveita o `.webp` original e acopla `./media/som.mp3` (figurinhas Lottie são ignoradas).
+- **Figurinhas (estáticas, animadas ou Audio Stickers):** reaproveita o `.webp` original e acopla o áudio configurado (figurinhas Lottie são ignoradas).
 - **Imagens:** converte para WebP 512×512 (`-lossless 1`).
 - **Vídeos:** converte para WebP animado 512×512 (até 5s, 15 fps; recomprime automaticamente para 10 fps / 4s se ultrapassar 490 KB).
 
-### Opções via legenda (`caption`)
+### Usando outro áudio (sem alterar `./media/som.mp3`)
 
-- **Modo de corte** (imagens e vídeos):
+- **Responder a um áudio com mídia:** responda um áudio (nota de voz, MP3/arquivo de áudio, vídeo com som ou outro Audio Sticker) enviando a figurinha, imagem ou vídeo.
+- **Responder a uma mídia com áudio:** responda uma figurinha, imagem ou vídeo enviando uma nota de voz ou arquivo de áudio.
+- **Áudio temporário por chat:** responda um áudio com `!audio` para aplicá-lo em todas as próximas figurinhas do chat (e `!audio padrao` para voltar).
+- **Preservar áudio do próprio vídeo:** adicione `original` (ou `preservar`, `manter audio`, `manter som`) na legenda do vídeo.
+
+### Opções de corte via legenda (`caption`)
+
+- **Modo de corte** (imagens e vídeos, combinável com `original` em vídeos):
   - `inteiro` (padrão) — redimensiona mantendo tudo com fundo transparente.
   - `centro` ou `corte` — recorta centralizado em 512×512.
   - `direita` — recorta alinhado à direita em 512×512.
-- **Preservar áudio original (vídeos):**
-  - Inclua `original`, `preservar`, `manter audio` (ou `manter áudio`) ou `manter som` na legenda para extrair a trilha de áudio do próprio vídeo (até a duração do corte) em vez de usar `som.mp3`. Se o vídeo não tiver faixa de áudio, usa `som.mp3` automaticamente.
-  - É possível combinar com o modo de corte (ex.: `centro original`).
 
 ## Utilitário de engenharia reversa
 
