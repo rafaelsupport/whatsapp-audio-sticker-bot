@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import P from 'pino';
 import qrcode from 'qrcode-terminal';
+import { criarGerenciadorWeb } from './web.js';
 
 const require = createRequire(import.meta.url);
 const protobuf = require('protobufjs/minimal');
@@ -46,6 +47,9 @@ const startTimeSec = Math.floor(Date.now() / 1000);
 let audioCache = { mtimeMs: 0, duracao: MAX_AUDIO_SECONDS };
 let reconectando = false;
 let jobsEmExecucao = 0;
+let activeSock = null;
+let activeState = null;
+let whatsappConectado = false;
 
 // Carrega/salva chats autorizados (evita disparar em conversas aleatórias)
 function carregarChatsAtivos() {
@@ -648,6 +652,8 @@ async function executarProcessamentoMidia(sock, m, content, options = {}) {
     let isAnimated = false;
     let audioInfo = null;
     let duracaoMax = MAX_AUDIO_SECONDS;
+    let origemDescricao = 'Sticker';
+    let detalheModo = '';
     const {
       customAudioMsg = null,
       customAudioSource = null,
@@ -663,10 +669,13 @@ async function executarProcessamentoMidia(sock, m, content, options = {}) {
       // Reaproveita o WebP original diretamente (estático ou animado)
       isAnimated = Boolean(content.stickerMessage.isAnimated) || buffer.includes(Buffer.from('ANIM'));
       fs.writeFileSync(tempWebp, buffer);
-      console.log(`🧩 Sticker ${isAnimated ? 'animado' : 'estático'} recebido -> preparando áudio...`);
+      origemDescricao = `Sticker ${isAnimated ? 'animado' : 'estático'} recebido`;
+      console.log(`🧩 ${origemDescricao} -> preparando áudio...`);
     } else if (content.imageMessage) {
       const modo = detectarModoCorte(content.imageMessage.caption);
       fs.writeFileSync(tempIn, buffer);
+      origemDescricao = 'Imagem recebida';
+      detalheModo = `corte: ${modo}`;
       console.log(`🖼️  Imagem recebida (modo: ${modo}) -> convertendo...`);
       await converterImagemParaWebp(tempIn, tempWebp, modo);
       isAnimated = false;
@@ -675,6 +684,8 @@ async function executarProcessamentoMidia(sock, m, content, options = {}) {
       const modo = detectarModoCorte(caption);
       const preservarAudio = !customAudioSource && devePreservarAudioOriginal(caption);
       fs.writeFileSync(tempIn, buffer);
+      origemDescricao = 'Vídeo recebido';
+      detalheModo = `corte: ${modo}`;
       console.log(
         `🎬 Vídeo recebido (modo: ${modo} | áudio: ${customAudioSource ? customAudioSource.label : preservarAudio ? 'original' : 'padrão'}) -> convertendo para WebP animado...`
       );
@@ -691,6 +702,13 @@ async function executarProcessamentoMidia(sock, m, content, options = {}) {
     } else {
       return;
     }
+
+    webManager.registrarEvento(jid, {
+      direction: 'in',
+      kind: 'media',
+      text: origemDescricao,
+      detail: detalheModo || undefined
+    });
 
     if (customAudioSource) {
       console.log(`🎵 Baixando ${customAudioSource.label} personalizado...`);
@@ -714,6 +732,12 @@ async function executarProcessamentoMidia(sock, m, content, options = {}) {
     const kb = (fs.statSync(tempWebp).size / 1024).toFixed(1);
     console.log(`📦 WebP pronto (${kb} KB). Enviando com áudio...`);
     await enviarAudioSticker(sock, jid, tempWebp, isAnimated, audioInfo, replyToMsg);
+    webManager.registrarEvento(jid, {
+      direction: 'out',
+      kind: 'sticker',
+      text: `Audio Sticker (${isAnimated ? 'animado' : 'estático'}) enviado`,
+      detail: `${kb} KB • ${audioInfo ? `${audioInfo.duracao}s personalizado` : 'som.mp3'}`
+    });
     if (deleteForMeMsg) {
       await deletarParaMim(sock, jid, deleteForMeMsg);
     }
@@ -722,6 +746,12 @@ async function executarProcessamentoMidia(sock, m, content, options = {}) {
     if (err?.cause) {
       console.error('   ↳ cause:', err.cause);
     }
+    webManager.registrarEvento(jid, {
+      direction: 'system',
+      kind: 'error',
+      error: true,
+      text: `Erro ao processar mídia: ${err.message || err}`
+    });
   } finally {
     for (const file of [tempIn, tempWebp, tempAudioIn, tempOgg]) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -758,6 +788,49 @@ function agendarReconexao(delayMs = 3000) {
   }, delayMs);
 }
 
+const webManager = criarGerenciadorWeb({
+  getSock: () => activeSock,
+  isConnected: () => whatsappConectado,
+  getMe: () => activeSock?.user || activeState?.creds?.me || null,
+  isSelfChat: (jid, altJid) => ehChatProprio(activeSock || {}, activeState || {}, jid, altJid),
+  isChatActive: (jid, altJid) => chatEstaAtivo(jid, altJid),
+  getActiveJids: () => [...chatsAtivos],
+  setChatActive: (jid, active, altJid) => {
+    if (active) {
+      chatsAtivos.add(jid);
+    } else {
+      chatsAtivos.delete(jid);
+      if (altJid) chatsAtivos.delete(altJid);
+    }
+    salvarChatsAtivos(chatsAtivos);
+    return active;
+  },
+  getChatCustomAudio: (jid, altJid) => obterAudioPersonalizadoChat(jid, altJid),
+  resetChatCustomAudio: (jid, altJid) => limparAudioPersonalizadoChat(jid, altJid),
+  getDefaultAudioInfo: () => ({ exists: fs.existsSync(INPUT_AUDIO), duracao: audioCache.duracao, duration: audioCache.duracao }),
+  getDefaultAudioPaths: () => ({ mp3Path: INPUT_AUDIO, oggPath: CACHE_OGG }),
+  getQueueInfo: () => ({ running: jobsEmExecucao, pending: filaProcessamento.length }),
+  sendTextMessage: async (jid, text) => {
+    if (!activeSock) throw new Error('Socket indisponível');
+    return enviarTexto(activeSock, jid, text);
+  }
+});
+
+function sincronizarContatosLista(lista = []) {
+  for (const c of lista) {
+    if (!c?.id) continue;
+    const base = {
+      phone: c.phoneNumber,
+      name: c.name || c.verifiedName,
+      notify: c.notify
+    };
+    webManager.registrarContato({ ...base, jid: c.id, altJid: c.lid });
+    if (c.lid) {
+      webManager.registrarContato({ ...base, jid: c.lid, altJid: c.id });
+    }
+  }
+}
+
 async function iniciar() {
   await garantirAudioPronto();
 
@@ -772,7 +845,12 @@ async function iniciar() {
     markOnlineOnConnect: false
   });
 
+  activeSock = sock;
+  activeState = state;
+
   sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('contacts.upsert', sincronizarContatosLista);
+  sock.ev.on('contacts.update', sincronizarContatosLista);
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const m of messages) {
@@ -780,6 +858,13 @@ async function iniciar() {
       const jid = m.key?.remoteJid;
       const altJid = m.key?.remoteJidAlt;
       if (!id || !jid) continue;
+
+      webManager.registrarContato({
+        jid,
+        altJid,
+        pushName: m.key.fromMe ? '' : m.pushName
+      });
+
       if (sentByBotIds.has(id) || processedIds.has(id)) continue;
 
       // Ignora mensagens antigas de histórico sincronizado
@@ -825,6 +910,7 @@ async function iniciar() {
         chatsAtivos.add(jid);
         salvarChatsAtivos(chatsAtivos);
         console.log(`✅ Fábrica ativada no chat: ${jid}`);
+        webManager.registrarEvento(jid, { direction: 'in', kind: 'cmd', text: '!ativar' });
         await enviarTexto(
           sock,
           jid,
@@ -838,6 +924,7 @@ async function iniciar() {
         if (altJid) chatsAtivos.delete(altJid);
         salvarChatsAtivos(chatsAtivos);
         console.log(`🛑 Fábrica desativada no chat: ${jid}`);
+        webManager.registrarEvento(jid, { direction: 'in', kind: 'cmd', text: '!desativar' });
         await enviarTexto(sock, jid, '🛑 Fábrica de figurinhas *DESATIVADA* neste chat.');
         continue;
       }
@@ -846,6 +933,7 @@ async function iniciar() {
 
       if (['!audio padrao', '!audio padrão', '!audio reset', '!audio limpar', '!som padrao', '!som padrão'].includes(texto)) {
         limparAudioPersonalizadoChat(jid, altJid);
+        webManager.registrarEvento(jid, { direction: 'in', kind: 'cmd', text: texto });
         await enviarTexto(sock, jid, '🔊 Este chat voltou a usar o *som.mp3* padrão.');
         continue;
       }
@@ -880,6 +968,11 @@ async function iniciar() {
           }
           definirAudioPersonalizadoChat(info, jid, altJid);
           console.log(`🎵 Áudio personalizado definido para ${jid} (${info.duracao}s)`);
+          webManager.registrarEvento(jid, {
+            direction: 'system',
+            kind: 'audio',
+            text: `Áudio personalizado definido via ${texto} (${info.duracao}s)`
+          });
           await enviarTexto(
             sock,
             jid,
@@ -928,6 +1021,7 @@ async function iniciar() {
     if (qr) qrcode.generate(qr, { small: true });
 
     if (connection === 'close') {
+      whatsappConectado = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       const motivo = lastDisconnect?.error?.message || 'desconhecido';
       console.warn(`⚠️  Conexão fechada | statusCode: ${code} | motivo: ${motivo}`);
@@ -945,11 +1039,14 @@ async function iniciar() {
     }
 
     if (connection === 'open') {
+      whatsappConectado = true;
       console.log('🟢 Fábrica de Audio Stickers online!');
       console.log(`📌 Chats ativos: ${chatsAtivos.size > 0 ? [...chatsAtivos].join(', ') : 'nenhum (envie !ativar em um chat)'}`);
     }
   });
 }
+
+webManager.iniciarServidor();
 
 iniciar().catch((err) => {
   console.error('❌ Erro na inicialização:', err);

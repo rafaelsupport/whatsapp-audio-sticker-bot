@@ -6,6 +6,7 @@ npm-debug.log*
 # Sessão do WhatsApp e estado em runtime
 auth/
 chats_ativos.json
+contatos_cache.json
 
 # Ignora mídias de teste, caches e temporários, mantendo apenas o som padrão
 media/*

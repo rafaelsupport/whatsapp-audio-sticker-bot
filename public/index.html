@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Sticker • Gerência</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app-shell" id="appShell">
+    <!-- Barra lateral esquerda (Chats) -->
+    <aside class="sidebar">
+      <header class="sidebar-header">
+        <div class="me-info">
+          <div class="avatar avatar-sm" id="meAvatar"></div>
+          <div class="me-meta">
+            <div class="me-name" id="meName">Carregando...</div>
+            <div class="conn-badge" id="connBadge">
+              <span class="dot"></span>
+              <span id="connText">Verificando...</span>
+            </div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="icon-btn" id="btnPlayDefault" title="Ouvir som.mp3 padrão" aria-label="Ouvir som padrão">
+            🔊
+          </button>
+          <button class="icon-btn" id="btnRefreshAll" title="Atualizar lista" aria-label="Atualizar lista">
+            ↻
+          </button>
+        </div>
+      </header>
+
+      <audio id="defaultAudioPlayer" preload="none" src="/api/audio/default"></audio>
+
+      <div class="search-box">
+        <div class="search-inner">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            id="searchInput"
+            placeholder="Pesquisar por nome, número ou JID..."
+            autocomplete="off"
+          />
+        </div>
+      </div>
+
+      <div class="filter-tabs" role="tablist">
+        <button class="filter-tab active" data-filter="active">Ativos <span id="countActive">0</span></button>
+        <button class="filter-tab" data-filter="all">Todos <span id="countAll">0</span></button>
+        <button class="filter-tab" data-filter="groups">Grupos <span id="countGroups">0</span></button>
+      </div>
+
+      <div class="chat-list" id="chatList"></div>
+    </aside>
+
+    <!-- Área principal direita (Conversa / Gerência) -->
+    <main class="main-panel">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-card">
+          <div class="empty-logo">🎧</div>
+          <h1>Fábrica de Audio Stickers</h1>
+          <p>
+            Selecione um chat ao lado para ver número, nome, foto de perfil, histórico de figurinhas geradas e gerenciar a fábrica em tempo real.
+          </p>
+          <div class="stats-row" id="globalStats">
+            <div class="stat-pill">Ativos: <strong id="statActive">0</strong></div>
+            <div class="stat-pill">Fila: <strong id="statQueue">0</strong></div>
+            <div class="stat-pill">Áudio padrão: <strong id="statAudio">-</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <section class="chat-view hidden" id="chatView">
+        <header class="chat-header">
+          <div class="chat-header-left">
+            <button class="icon-btn mobile-back" id="btnBack" title="Voltar">←</button>
+            <div class="avatar avatar-md" id="chatAvatar"></div>
+            <div class="chat-header-meta">
+              <div class="chat-title-row">
+                <h2 id="chatName">-</h2>
+                <button class="inline-edit-btn" id="btnEditAlias" title="Editar apelido exibido no painel">✏️</button>
+                <span class="tag tag-self hidden" id="tagSelf">Você (Teste)</span>
+                <span class="tag tag-group hidden" id="tagGroup">Grupo</span>
+              </div>
+              <div class="chat-subtitle" id="chatSubtitle">-</div>
+            </div>
+          </div>
+
+          <div class="chat-header-actions">
+            <button class="btn btn-secondary hidden" id="btnResetAudio" title="Voltar chat para som.mp3">
+              🎵 Resetar áudio
+            </button>
+            <button class="btn btn-secondary" id="btnRefreshProfile" title="Atualizar foto e dados">
+              🔄 Atualizar
+            </button>
+            <button class="btn" id="btnToggleActive">Ativar</button>
+          </div>
+        </header>
+
+        <div class="chat-info-strip" id="chatInfoStrip"></div>
+
+        <div class="chat-messages" id="chatMessages"></div>
+
+        <footer class="chat-composer">
+          <form id="sendForm" class="composer-form">
+            <input
+              type="text"
+              id="messageInput"
+              placeholder="Enviar uma mensagem pelo bot para este chat..."
+              autocomplete="off"
+            />
+            <button type="submit" class="send-btn" title="Enviar">➤</button>
+          </form>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

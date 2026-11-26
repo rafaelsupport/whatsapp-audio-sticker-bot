@@ -46,6 +46,18 @@ pm2 logs audio-sticker
 - Não use `--watch` (os arquivos em `./auth`, `./media` e `chats_ativos.json` mudam em runtime).
 - Mantenha apenas **1 instância** (modo fork padrão) para evitar conflito de sessão (`440 connectionReplaced`).
 
+## Painel Web de Gerência
+
+Ao iniciar o bot, um painel web inspirado no WhatsApp Web Dark sobe automaticamente em:
+
+```text
+http://127.0.0.1:3000
+```
+
+- Mostra chats ativos e contatos descobertos com **nome**, **número formatado** (resolvendo `@lid` via mapeamento do Baileys) e **foto de perfil**.
+- Permite **ativar/desativar** chats, **resetar áudio personalizado**, **definir apelidos**, **ouvir o `som.mp3` padrão**, **acompanhar a timeline de stickers gerados** e **enviar mensagens** pelo bot.
+- Porta e host podem ser alterados via variáveis de ambiente `WEB_PORT` (padrão `3000`) e `WEB_HOST` (padrão `127.0.0.1`, ou `0.0.0.0` para acessar na rede local).
+
 ## Uso no WhatsApp
 
 ### Comandos
