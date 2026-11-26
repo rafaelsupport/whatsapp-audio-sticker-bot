@@ -675,6 +675,18 @@ function chatEstaAtivo(...jids) {
   return jids.some((jid) => jid && chatsAtivos.has(jid));
 }
 
+function agendarReconexao(delayMs = 3000) {
+  if (reconectando) return;
+  reconectando = true;
+  setTimeout(() => {
+    reconectando = false;
+    iniciar().catch((err) => {
+      console.error('❌ Falha na reconexão:', err.message || err);
+      agendarReconexao(5000);
+    });
+  }, delayMs);
+}
+
 async function iniciar() {
   await garantirAudioPronto();
 
@@ -862,13 +874,7 @@ async function iniciar() {
         return;
       }
 
-      if (!reconectando) {
-        reconectando = true;
-        setTimeout(() => {
-          reconectando = false;
-          iniciar();
-        }, 3000);
-      }
+      agendarReconexao(3000);
     }
 
     if (connection === 'open') {
