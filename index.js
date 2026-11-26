@@ -248,7 +248,7 @@ function filtroEscala(modo, isVideo) {
   if (cropPos) {
     return `${fps}scale=512:512:force_original_aspect_ratio=increase,crop=512:512:${cropPos}`;
   }
-  return `${fps}scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+  return `${fps}format=rgba,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
 }
 
 async function converterImagemParaWebp(inPath, outWebp, modo) {
