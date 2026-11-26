@@ -518,14 +518,38 @@ async function prepararAudioDeOrigem(sock, msgRef, audioSource, tempRawPath, out
   return { oggPath: outOggPath, duracao };
 }
 
+function montarContentMmg(content, mediaType, media) {
+  const dp = media.directPath.startsWith('/') ? media.directPath : `/${media.directPath}`;
+  return {
+    ...content,
+    [mediaType]: {
+      ...media,
+      directPath: dp,
+      url: `https://mmg.whatsapp.net${dp}`
+    }
+  };
+}
+
+function precisaIrDiretoMmg(media) {
+  if (!media?.directPath) return false;
+  if (!media.url) return true;
+  try {
+    return new URL(media.url).hostname === 'a.whatsapp.net';
+  } catch {
+    return true;
+  }
+}
+
 async function baixarMidia(sock, m, content) {
   const mediaType = ['stickerMessage', 'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage']
     .find((type) => content?.[type]);
   const media = mediaType ? content[mediaType] : null;
+  const irDiretoMmg = Boolean(mediaType && precisaIrDiretoMmg(media));
+  const conteudoInicial = irDiretoMmg ? montarContentMmg(content, mediaType, media) : content;
 
   try {
     return await downloadMediaMessage(
-      { ...m, message: content },
+      { ...m, message: conteudoInicial },
       'buffer',
       {},
       { logger: silentLogger, reuploadRequest: sock.updateMediaMessage }
@@ -541,18 +565,9 @@ async function baixarMidia(sock, m, content) {
       `⚠️  Falha no download primário (${err.message || err}) | cause: ${causeInfo} | url: ${media?.url || 'ausente'} | directPath: ${media?.directPath || 'ausente'}`
     );
 
-    if (mediaType && media?.directPath) {
-      const dp = media.directPath.startsWith('/') ? media.directPath : `/${media.directPath}`;
-      const fallbackUrl = `https://mmg.whatsapp.net${dp}`;
-      console.log(`🔄 Tentando fallback via directPath: ${fallbackUrl}`);
-      const fallbackContent = {
-        ...content,
-        [mediaType]: {
-          ...media,
-          directPath: dp,
-          url: fallbackUrl
-        }
-      };
+    if (!irDiretoMmg && mediaType && media?.directPath) {
+      const fallbackContent = montarContentMmg(content, mediaType, media);
+      console.log(`🔄 Tentando fallback via directPath: ${fallbackContent[mediaType].url}`);
       return await downloadMediaMessage(
         { ...m, message: fallbackContent },
         'buffer',
