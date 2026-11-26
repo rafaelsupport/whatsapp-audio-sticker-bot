@@ -26,12 +26,29 @@ export function criarGerenciadorWeb(ctx) {
   const groupCache = new Map();
   const chatEvents = new Map();
   const chatStats = new Map();
+  let agendaSincronizada = false;
+
+  function jidIgnorado(jid) {
+    return !jid || jid === 'status@broadcast' || jid.endsWith('@newsletter') || jid === '_meta';
+  }
 
   function carregarContatos() {
     try {
       if (fs.existsSync(CONTACTS_DB)) {
         const raw = JSON.parse(fs.readFileSync(CONTACTS_DB, 'utf8'));
-        return new Map(Object.entries(raw));
+        const map = new Map();
+        for (const [k, v] of Object.entries(raw)) {
+          if (k === '_meta') {
+            agendaSincronizada = Boolean(v?.agendaSincronizada);
+            continue;
+          }
+          if (jidIgnorado(k)) continue;
+          if (isJidGroup(k) && v?.notify) {
+            v.notify = '';
+          }
+          map.set(k, v);
+        }
+        return map;
       }
     } catch {}
     return new Map();
@@ -44,6 +61,7 @@ export function criarGerenciadorWeb(ctx) {
       salvarTimer = null;
       try {
         const obj = Object.fromEntries(contatos.entries());
+        obj._meta = { agendaSincronizada };
         fs.writeFileSync(CONTACTS_DB, JSON.stringify(obj, null, 2));
       } catch (err) {
         console.warn('⚠️  Erro ao salvar contatos_cache.json:', err.message || err);
@@ -74,10 +92,11 @@ export function criarGerenciadorWeb(ctx) {
 
   function registrarContato({ jid, altJid, phone, name, notify, pushName, alias, lastActivityAt } = {}) {
     const normJid = jid ? jidNormalizedUser(jid) : '';
-    if (!normJid || normJid === 'status@broadcast') return null;
+    if (jidIgnorado(normJid)) return null;
 
     const atual = contatos.get(normJid) || { jid: normJid };
     const normAlt = altJid ? jidNormalizedUser(altJid) : atual.altJid || '';
+    const isGroup = Boolean(isJidGroup(normJid));
     const phoneDigits =
       (phone && phone.replace(/\D/g, '')) ||
       extrairTelefoneDeJid(normJid) ||
@@ -90,9 +109,9 @@ export function criarGerenciadorWeb(ctx) {
       jid: normJid,
       altJid: normAlt && normAlt !== normJid ? normAlt : atual.altJid || '',
       phone: phoneDigits,
-      isGroup: Boolean(isJidGroup(normJid)),
+      isGroup,
       name: name || atual.name || '',
-      notify: notify || pushName || atual.notify || '',
+      notify: isGroup ? '' : notify || pushName || atual.notify || '',
       alias: alias !== undefined ? alias : atual.alias || '',
       lastActivityAt: Math.max(atual.lastActivityAt || 0, lastActivityAt || 0),
       updatedAt: Date.now()
@@ -156,6 +175,18 @@ export function criarGerenciadorWeb(ctx) {
     }
   }
 
+  function buscarPorTelefone(phone, ignoreJid) {
+    if (!phone) return null;
+    const pnEntry = contatos.get(`${phone}@s.whatsapp.net`);
+    if (pnEntry && pnEntry.jid !== ignoreJid) return pnEntry;
+    for (const c of contatos.values()) {
+      if (c.jid !== ignoreJid && c.phone === phone && (c.name || c.notify || c.alias)) {
+        return c;
+      }
+    }
+    return null;
+  }
+
   async function enriquecerChat(rawJid) {
     const jid = jidNormalizedUser(rawJid) || rawJid;
     const info = contatos.get(jid) || { jid };
@@ -168,6 +199,9 @@ export function criarGerenciadorWeb(ctx) {
       if (phone) registrarContato({ jid, phone });
     }
 
+    const peer = !isGroup ? buscarPorTelefone(phone, jid) : null;
+    const altJid = info.altJid || (peer?.jid && peer.jid !== jid ? peer.jid : '');
+
     let groupName = '';
     if (isGroup && !info.name) {
       groupName = await resolverNomeGrupo(jid);
@@ -175,29 +209,32 @@ export function criarGerenciadorWeb(ctx) {
 
     const me = ctx.getMe();
     const selfName = isSelf ? me?.name || 'Você (Self-Chat)' : '';
-    const nome = info.alias || info.name || groupName || info.notify || selfName || '';
+    const savedName = info.name || groupName || peer?.name || '';
+    const pushName = isGroup ? '' : info.notify || peer?.notify || '';
+    const alias = info.alias || peer?.alias || '';
+    const nome = alias || savedName || pushName || selfName || '';
     const formattedPhone = formatarTelefone(phone);
     const displayName = nome || formattedPhone || jid.split('@')[0];
 
-    const customAudio = ctx.getChatCustomAudio(jid, info.altJid);
-    const active = ctx.isChatActive(jid, info.altJid);
+    const customAudio = ctx.getChatCustomAudio(jid, altJid);
+    const active = ctx.isChatActive(jid, altJid);
     const stats = chatStats.get(jid) || { stickersSent: 0 };
 
     return {
       jid,
-      altJid: info.altJid || '',
+      altJid,
       phone,
       formattedPhone,
       displayName,
-      alias: info.alias || '',
-      savedName: info.name || groupName || '',
-      pushName: info.notify || '',
+      alias,
+      savedName,
+      pushName,
       isSelf,
       isGroup,
       active,
       hasCustomAudio: Boolean(customAudio),
       customAudioDuration: customAudio?.duracao || 0,
-      lastActivityAt: info.lastActivityAt || 0,
+      lastActivityAt: Math.max(info.lastActivityAt || 0, peer?.lastActivityAt || 0),
       stats
     };
   }
@@ -319,18 +356,25 @@ export function criarGerenciadorWeb(ctx) {
     }
 
     if (req.method === 'GET' && pathname === '/api/chats') {
-      const allJids = new Set([...ctx.getActiveJids(), ...contatos.keys()]);
+      const allJids = new Set([...ctx.getActiveJids(), ...contatos.keys()].filter((j) => !jidIgnorado(j)));
       const lista = await Promise.all([...allJids].map((j) => enriquecerChat(j)));
 
-      // Remove entradas duplicadas caso altJid aponte para um JID já presente na lista
+      // Prioriza ativos / @lid na deduplicação por JID ou telefone
+      lista.sort((a, b) => {
+        if (a.active !== b.active) return a.active ? -1 : 1;
+        if (a.jid.endsWith('@lid') !== b.jid.endsWith('@lid')) return a.jid.endsWith('@lid') ? -1 : 1;
+        return 0;
+      });
+
       const vistos = new Set();
+      const telefonesVistos = new Set();
       const unicos = [];
       for (const item of lista) {
         if (vistos.has(item.jid)) continue;
+        if (!item.isGroup && item.phone && telefonesVistos.has(item.phone)) continue;
         vistos.add(item.jid);
-        if (item.altJid && ctx.isChatActive(item.jid)) {
-          vistos.add(item.altJid);
-        }
+        if (item.altJid) vistos.add(item.altJid);
+        if (!item.isGroup && item.phone) telefonesVistos.add(item.phone);
         unicos.push(item);
       }
 
@@ -428,6 +472,12 @@ export function criarGerenciadorWeb(ctx) {
       return enviarJson(res, 200, { ok: true, chat });
     }
 
+    if (req.method === 'POST' && pathname === '/api/contacts/sync') {
+      if (!ctx.isConnected()) return enviarJson(res, 503, { error: 'Bot desconectado do WhatsApp' });
+      const count = await ctx.syncContacts();
+      return enviarJson(res, 200, { ok: true, count });
+    }
+
     if (req.method === 'POST' && pathname === '/api/chats/send') {
       const { jid, text } = await lerJsonBody(req);
       const msgText = String(text || '').trim();
@@ -473,6 +523,11 @@ export function criarGerenciadorWeb(ctx) {
   return {
     iniciarServidor,
     registrarContato,
-    registrarEvento
+    registrarEvento,
+    jaSincronizouAgenda: () => agendaSincronizada,
+    marcarAgendaSincronizada: () => {
+      agendaSincronizada = true;
+      agendarSalvarContatos();
+    }
   };
 }

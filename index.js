@@ -7,6 +7,7 @@ import makeWASocket, {
   DisconnectReason,
   prepareWAMessageMedia,
   downloadMediaMessage,
+  isJidGroup,
   jidNormalizedUser,
   proto
 } from '@whiskeysockets/baileys';
@@ -813,8 +814,36 @@ const webManager = criarGerenciadorWeb({
   sendTextMessage: async (jid, text) => {
     if (!activeSock) throw new Error('Socket indisponível');
     return enviarTexto(activeSock, jid, text);
+  },
+  syncContacts: async () => {
+    if (!activeSock || !activeState) throw new Error('Socket indisponível');
+    return sincronizarAgendaWhatsApp(activeSock, activeState);
   }
 });
+
+let sincronizandoAgenda = false;
+async function sincronizarAgendaWhatsApp(sock, state) {
+  if (sincronizandoAgenda) return 0;
+  sincronizandoAgenda = true;
+  let count = 0;
+  const contar = (lista = []) => {
+    count += lista.length;
+  };
+  sock.ev.on('contacts.upsert', contar);
+  try {
+    await state.keys.set({ 'app-state-sync-version': { critical_unblock_low: null } });
+    await sock.resyncAppState(['critical_unblock_low'], false);
+    webManager.marcarAgendaSincronizada();
+    console.log(`📇 Agenda sincronizada (${count} contatos recebidos do WhatsApp).`);
+    return count;
+  } catch (err) {
+    console.warn(`⚠️  Não foi possível sincronizar agenda (${err.message || err}).`);
+    return 0;
+  } finally {
+    sock.ev.off('contacts.upsert', contar);
+    sincronizandoAgenda = false;
+  }
+}
 
 function sincronizarContatosLista(lista = []) {
   for (const c of lista) {
@@ -859,11 +888,22 @@ async function iniciar() {
       const altJid = m.key?.remoteJidAlt;
       if (!id || !jid) continue;
 
-      webManager.registrarContato({
-        jid,
-        altJid,
-        pushName: m.key.fromMe ? '' : m.pushName
-      });
+      if (isJidGroup(jid)) {
+        webManager.registrarContato({ jid });
+        if (m.key.participant && !m.key.fromMe) {
+          webManager.registrarContato({
+            jid: m.key.participant,
+            altJid: m.key.participantAlt,
+            pushName: m.pushName
+          });
+        }
+      } else {
+        webManager.registrarContato({
+          jid,
+          altJid,
+          pushName: m.key.fromMe ? '' : m.pushName
+        });
+      }
 
       if (sentByBotIds.has(id) || processedIds.has(id)) continue;
 
@@ -872,9 +912,11 @@ async function iniciar() {
       if (ts > 0 && ts < startTimeSec - 5) continue;
 
       if (!m.message) {
-        console.warn(
-          `⚠️  Mensagem sem payload (type=${type} | jid=${jid}${altJid ? ` | alt=${altJid}` : ''} | fromMe=${Boolean(m.key?.fromMe)} | stub=${m.messageStubType ?? 'nenhum'} | params=${JSON.stringify(m.messageStubParameters || [])})`
-        );
+        if (!jid.endsWith('@newsletter') && jid !== 'status@broadcast') {
+          console.warn(
+            `⚠️  Mensagem sem payload (type=${type} | jid=${jid}${altJid ? ` | alt=${altJid}` : ''} | fromMe=${Boolean(m.key?.fromMe)} | stub=${m.messageStubType ?? 'nenhum'} | params=${JSON.stringify(m.messageStubParameters || [])})`
+          );
+        }
         continue;
       }
 
@@ -1042,6 +1084,9 @@ async function iniciar() {
       whatsappConectado = true;
       console.log('🟢 Fábrica de Audio Stickers online!');
       console.log(`📌 Chats ativos: ${chatsAtivos.size > 0 ? [...chatsAtivos].join(', ') : 'nenhum (envie !ativar em um chat)'}`);
+      if (!webManager.jaSincronizouAgenda()) {
+        sincronizarAgendaWhatsApp(sock, state);
+      }
     }
   });
 }

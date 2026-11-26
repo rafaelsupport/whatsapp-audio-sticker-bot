@@ -13,6 +13,7 @@ const els = {
   meName: document.getElementById('meName'),
   connBadge: document.getElementById('connBadge'),
   connText: document.getElementById('connText'),
+  btnSyncContacts: document.getElementById('btnSyncContacts'),
   btnPlayDefault: document.getElementById('btnPlayDefault'),
   btnRefreshAll: document.getElementById('btnRefreshAll'),
   defaultAudioPlayer: document.getElementById('defaultAudioPlayer'),
@@ -180,7 +181,11 @@ function renderChatList() {
     bottom.className = 'chat-row-bottom';
     const subEl = document.createElement('div');
     subEl.className = 'chat-row-sub';
-    subEl.textContent = chat.formattedPhone || (chat.isGroup ? 'Grupo WhatsApp' : chat.jid);
+    if (chat.displayName === chat.formattedPhone) {
+      subEl.textContent = `Sem nome salvo • ${chat.jid}`;
+    } else {
+      subEl.textContent = chat.formattedPhone || (chat.isGroup ? 'Grupo WhatsApp' : chat.jid);
+    }
 
     const badges = document.createElement('div');
     badges.className = 'chat-row-badges';
@@ -350,6 +355,17 @@ els.btnBack.addEventListener('click', () => {
 els.btnRefreshAll.addEventListener('click', async () => {
   await refreshAll();
   showToast('Lista atualizada');
+});
+
+els.btnSyncContacts.addEventListener('click', async () => {
+  showToast('Sincronizando agenda do WhatsApp...');
+  try {
+    const { count } = await apiJson('/api/contacts/sync', { method: 'POST' });
+    await refreshAll();
+    showToast(`Agenda sincronizada (${count} contatos)`);
+  } catch (err) {
+    showToast(err.message);
+  }
 });
 
 els.btnPlayDefault.addEventListener('click', () => {
