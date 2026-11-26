@@ -601,6 +601,35 @@ function enfileirarProcessamento(tarefa) {
   });
 }
 
+function obterAudioPersonalizadoChat(...jids) {
+  for (const jid of jids) {
+    if (!jid || !chatCustomAudios.has(jid)) continue;
+    const chatAudio = chatCustomAudios.get(jid);
+    if (fs.existsSync(chatAudio.oggPath)) {
+      return chatAudio;
+    }
+    chatCustomAudios.delete(jid);
+  }
+  return null;
+}
+
+function definirAudioPersonalizadoChat(info, ...jids) {
+  for (const jid of jids) {
+    if (jid) chatCustomAudios.set(jid, info);
+  }
+}
+
+function limparAudioPersonalizadoChat(...jids) {
+  for (const jid of jids) {
+    if (!jid) continue;
+    const anterior = chatCustomAudios.get(jid);
+    chatCustomAudios.delete(jid);
+    if (anterior?.oggPath && fs.existsSync(anterior.oggPath)) {
+      fs.unlinkSync(anterior.oggPath);
+    }
+  }
+}
+
 function processarMidiaRecebida(sock, m, content, options = {}) {
   return enfileirarProcessamento(() => executarProcessamentoMidia(sock, m, content, options));
 }
@@ -678,13 +707,8 @@ async function executarProcessamentoMidia(sock, m, content, options = {}) {
       }
     }
 
-    if (!audioInfo && chatCustomAudios.has(jid)) {
-      const chatAudio = chatCustomAudios.get(jid);
-      if (fs.existsSync(chatAudio.oggPath)) {
-        audioInfo = chatAudio;
-      } else {
-        chatCustomAudios.delete(jid);
-      }
+    if (!audioInfo) {
+      audioInfo = obterAudioPersonalizadoChat(jid, m.key?.remoteJidAlt);
     }
 
     const kb = (fs.statSync(tempWebp).size / 1024).toFixed(1);
@@ -821,11 +845,7 @@ async function iniciar() {
       if (!ativo) continue;
 
       if (['!audio padrao', '!audio padrão', '!audio reset', '!audio limpar', '!som padrao', '!som padrão'].includes(texto)) {
-        const anterior = chatCustomAudios.get(jid);
-        chatCustomAudios.delete(jid);
-        if (anterior?.oggPath && fs.existsSync(anterior.oggPath)) {
-          fs.unlinkSync(anterior.oggPath);
-        }
+        limparAudioPersonalizadoChat(jid, altJid);
         await enviarTexto(sock, jid, '🔊 Este chat voltou a usar o *som.mp3* padrão.');
         continue;
       }
@@ -858,7 +878,7 @@ async function iniciar() {
             await enviarTexto(sock, jid, '⚠️ O vídeo respondido não possui faixa de áudio.');
             continue;
           }
-          chatCustomAudios.set(jid, info);
+          definirAudioPersonalizadoChat(info, jid, altJid);
           console.log(`🎵 Áudio personalizado definido para ${jid} (${info.duracao}s)`);
           await enviarTexto(
             sock,
