@@ -235,20 +235,21 @@ async function garantirAudioPronto() {
 }
 
 const MODOS_CORTE_CROP = {
-  esquerda: '0:(ih-512)/2',
-  direita: 'iw-512:(ih-512)/2',
-  cima: '(iw-512)/2:0',
-  baixo: '(iw-512)/2:ih-512',
-  centro: '(iw-512)/2:(ih-512)/2'
+  esquerda: '0:(ih-S)/2',
+  direita: 'iw-S:(ih-S)/2',
+  cima: '(iw-S)/2:0',
+  baixo: '(iw-S)/2:ih-S',
+  centro: '(iw-S)/2:(ih-S)/2'
 };
 
-function filtroEscala(modo, isVideo) {
-  const fps = isVideo ? 'fps=15,' : '';
-  const cropPos = MODOS_CORTE_CROP[modo];
-  if (cropPos) {
-    return `${fps}scale=512:512:force_original_aspect_ratio=increase,crop=512:512:${cropPos}`;
-  }
-  return `${fps}format=rgba,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+function filtroEscala(modo, isVideo, fps = 15, tamanho = 512) {
+  const prefixoFps = isVideo ? `fps=${fps},` : '';
+  const cropTemplate = MODOS_CORTE_CROP[modo];
+  const base = cropTemplate
+    ? `${prefixoFps}scale=${tamanho}:${tamanho}:force_original_aspect_ratio=increase,crop=${tamanho}:${tamanho}:${cropTemplate.replace(/S/g, String(tamanho))}`
+    : `${prefixoFps}format=rgba,scale=${tamanho}:${tamanho}:force_original_aspect_ratio=decrease,pad=${tamanho}:${tamanho}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+
+  return tamanho < 512 ? `${base},scale=512:512:flags=fast_bilinear` : base;
 }
 
 async function converterImagemParaWebp(inPath, outWebp, modo) {
@@ -260,29 +261,32 @@ async function converterImagemParaWebp(inPath, outWebp, modo) {
   ]);
 }
 
-async function converterVideoParaWebp(inPath, outWebp, modo) {
-  await execFileAsync('ffmpeg', [
-    '-y', '-i', inPath, '-t', String(MAX_VIDEO_SECONDS),
-    '-vf', filtroEscala(modo, true),
-    '-vcodec', 'libwebp', '-lossless', '0', '-compression_level', '6',
-    '-q:v', '60', '-loop', '0', '-preset', 'picture', '-an', '-vsync', '0',
-    outWebp
-  ]);
+const PERFIS_VIDEO_WEBP = [
+  { duracao: MAX_VIDEO_SECONDS, fps: 15, qualidade: 60, tamanho: 512 },
+  { duracao: 4, fps: 10, qualidade: 30, tamanho: 512 },
+  { duracao: 3, fps: 8, qualidade: 20, tamanho: 384 },
+  { duracao: 2, fps: 6, qualidade: 15, tamanho: 320 }
+];
 
-  // Se passou de 500 KB (limite do WhatsApp), recomprime automaticamente
-  if (fs.statSync(outWebp).size > 490 * 1024) {
-    console.log('⚠️  WebP animado > 490 KB, recomprimindo automaticamente...');
-    const filtroMenor = filtroEscala(modo, true).replace('fps=15', 'fps=10');
+async function converterVideoParaWebp(inPath, outWebp, modo) {
+  const limiteBytes = 490 * 1024;
+  for (let i = 0; i < PERFIS_VIDEO_WEBP.length; i++) {
+    const { duracao, fps, qualidade, tamanho } = PERFIS_VIDEO_WEBP[i];
+    if (i > 0) {
+      console.log(`⚠️  WebP animado > 490 KB, recomprimindo (tentativa ${i + 1}: ${fps}fps, q=${qualidade}, ${duracao}s)...`);
+    }
     await execFileAsync('ffmpeg', [
-      '-y', '-i', inPath, '-t', '4',
-      '-vf', filtroMenor,
+      '-y', '-i', inPath, '-t', String(duracao),
+      '-vf', filtroEscala(modo, true, fps, tamanho),
       '-vcodec', 'libwebp', '-lossless', '0', '-compression_level', '6',
-      '-q:v', '30', '-loop', '0', '-preset', 'picture', '-an', '-vsync', '0',
+      '-q:v', String(qualidade), '-loop', '0', '-preset', 'picture', '-an', '-vsync', '0',
       outWebp
     ]);
-    return 4;
+    if (fs.statSync(outWebp).size <= limiteBytes) {
+      return duracao;
+    }
   }
-  return MAX_VIDEO_SECONDS;
+  return PERFIS_VIDEO_WEBP[PERFIS_VIDEO_WEBP.length - 1].duracao;
 }
 
 function desembrulharMensagem(msg) {
