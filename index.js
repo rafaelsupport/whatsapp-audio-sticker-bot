@@ -29,6 +29,7 @@ const CACHE_OGG = path.resolve('./media/_cache_audio.ogg');
 const CHATS_DB = path.resolve('./chats_ativos.json');
 const MAX_AUDIO_SECONDS = 5;
 const MAX_VIDEO_SECONDS = 5;
+const MAX_CONCURRENT_JOBS = 2;
 const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'esquerda' | 'direita' | 'cima' | 'baixo'
 // ================================================
 
@@ -39,10 +40,12 @@ const chatCustomAudios = new Map();
 const embeddedAudios = new WeakMap();
 const sentByBotIds = new Set();
 const processedIds = new Set();
+const filaProcessamento = [];
 const startTimeSec = Math.floor(Date.now() / 1000);
 
 let audioCache = { mtimeMs: 0, duracao: MAX_AUDIO_SECONDS };
 let reconectando = false;
+let jobsEmExecucao = 0;
 
 // Carrega/salva chats autorizados (evita disparar em conversas aleatórias)
 function carregarChatsAtivos() {
@@ -562,7 +565,32 @@ async function baixarMidia(sock, m, content) {
   }
 }
 
-async function processarMidiaRecebida(sock, m, content, options = {}) {
+function avancarFila() {
+  while (jobsEmExecucao < MAX_CONCURRENT_JOBS && filaProcessamento.length > 0) {
+    const { tarefa, resolve, reject } = filaProcessamento.shift();
+    jobsEmExecucao++;
+    Promise.resolve()
+      .then(tarefa)
+      .then(resolve, reject)
+      .finally(() => {
+        jobsEmExecucao--;
+        avancarFila();
+      });
+  }
+}
+
+function enfileirarProcessamento(tarefa) {
+  return new Promise((resolve, reject) => {
+    filaProcessamento.push({ tarefa, resolve, reject });
+    avancarFila();
+  });
+}
+
+function processarMidiaRecebida(sock, m, content, options = {}) {
+  return enfileirarProcessamento(() => executarProcessamentoMidia(sock, m, content, options));
+}
+
+async function executarProcessamentoMidia(sock, m, content, options = {}) {
   const jid = m.key.remoteJid;
   const uid = `${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const tempIn = path.resolve(`./media/_tmp_in_${uid}`);
