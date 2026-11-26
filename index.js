@@ -871,7 +871,8 @@ async function iniciar() {
     auth: state,
     logger: baileysLogger,
     syncFullHistory: false,
-    markOnlineOnConnect: false
+    markOnlineOnConnect: false,
+    shouldIgnoreJid: (jid) => jid === 'status@broadcast' || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')
   });
 
   activeSock = sock;
@@ -887,6 +888,7 @@ async function iniciar() {
       const jid = m.key?.remoteJid;
       const altJid = m.key?.remoteJidAlt;
       if (!id || !jid) continue;
+      if (jid === 'status@broadcast' || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) continue;
 
       if (isJidGroup(jid)) {
         webManager.registrarContato({ jid });
@@ -912,7 +914,7 @@ async function iniciar() {
       if (ts > 0 && ts < startTimeSec - 5) continue;
 
       if (!m.message) {
-        if (!jid.endsWith('@newsletter') && jid !== 'status@broadcast') {
+        if (chatEstaAtivo(jid, altJid)) {
           console.warn(
             `⚠️  Mensagem sem payload (type=${type} | jid=${jid}${altJid ? ` | alt=${altJid}` : ''} | fromMe=${Boolean(m.key?.fromMe)} | stub=${m.messageStubType ?? 'nenhum'} | params=${JSON.stringify(m.messageStubParameters || [])})`
           );
