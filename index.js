@@ -33,6 +33,7 @@ const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'esquerda' | 'dir
 // ================================================
 
 const silentLogger = P({ level: 'silent' });
+const baileysLogger = P({ level: 'error' });
 const pendingAudioStickers = new Map();
 const chatCustomAudios = new Map();
 const embeddedAudios = new WeakMap();
@@ -657,15 +658,21 @@ async function processarMidiaRecebida(sock, m, content, options = {}) {
   }
 }
 
-function ehChatProprio(sock, state, jid) {
-  const normJid = jidNormalizedUser(jid);
-  if (!normJid) return false;
+function ehChatProprio(sock, state, ...jids) {
   const meId = sock.user?.id || state.creds?.me?.id;
   const meLid = sock.user?.lid || state.creds?.me?.lid;
-  return Boolean(
-    (meId && normJid === jidNormalizedUser(meId)) ||
-    (meLid && normJid === jidNormalizedUser(meLid))
-  );
+  const normMeId = meId ? jidNormalizedUser(meId) : '';
+  const normMeLid = meLid ? jidNormalizedUser(meLid) : '';
+
+  return jids.some((jid) => {
+    const normJid = jidNormalizedUser(jid);
+    if (!normJid) return false;
+    return Boolean((normMeId && normJid === normMeId) || (normMeLid && normJid === normMeLid));
+  });
+}
+
+function chatEstaAtivo(...jids) {
+  return jids.some((jid) => jid && chatsAtivos.has(jid));
 }
 
 async function iniciar() {
@@ -677,28 +684,43 @@ async function iniciar() {
   const sock = makeWASocket({
     version,
     auth: state,
-    logger: silentLogger,
+    logger: baileysLogger,
     syncFullHistory: false,
     markOnlineOnConnect: false
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const m of messages) {
       const id = m.key?.id;
       const jid = m.key?.remoteJid;
-      if (!id || !jid || !m.message) continue;
+      const altJid = m.key?.remoteJidAlt;
+      if (!id || !jid) continue;
       if (sentByBotIds.has(id) || processedIds.has(id)) continue;
-
-      // Em chats com terceiros/grupos, ignora mensagens enviadas por você (fromMe),
-      // mantendo comandos e mídias próprios liberados apenas na conversa consigo mesmo
-      const ehProprio = ehChatProprio(sock, state, jid);
-      if (m.key.fromMe && !ehProprio) continue;
 
       // Ignora mensagens antigas de histórico sincronizado
       const ts = Number(m.messageTimestamp || 0);
       if (ts > 0 && ts < startTimeSec - 5) continue;
+
+      if (!m.message) {
+        console.warn(
+          `⚠️  Mensagem sem payload (type=${type} | jid=${jid}${altJid ? ` | alt=${altJid}` : ''} | fromMe=${Boolean(m.key?.fromMe)} | stub=${m.messageStubType ?? 'nenhum'} | params=${JSON.stringify(m.messageStubParameters || [])})`
+        );
+        continue;
+      }
+
+      const ehProprio = ehChatProprio(sock, state, jid, altJid);
+      const ativo = chatEstaAtivo(jid, altJid);
+
+      // Em chats com terceiros/grupos, ignora mensagens enviadas por você (fromMe),
+      // mantendo comandos e mídias próprios liberados apenas na conversa consigo mesmo
+      if (m.key.fromMe && !ehProprio) {
+        if (ativo) {
+          console.log(`⏭️  Ignorando mensagem própria (fromMe) em chat de terceiro: ${jid}`);
+        }
+        continue;
+      }
 
       processedIds.add(id);
       if (processedIds.size > 500) {
@@ -708,6 +730,12 @@ async function iniciar() {
 
       const content = desembrulharMensagem(m.message);
       const texto = extrairTexto(content).toLowerCase();
+
+      if (ativo || texto.startsWith('!')) {
+        console.log(
+          `📩 [UPSERT:${type}] jid=${jid}${altJid ? ` | alt=${altJid}` : ''} | fromMe=${Boolean(m.key?.fromMe)} | keys=${Object.keys(content || {}).join(',') || 'vazio'}`
+        );
+      }
 
       // Comandos para liberar ou travar o chat atual
       if (texto === '!ativar') {
@@ -724,13 +752,14 @@ async function iniciar() {
 
       if (texto === '!desativar') {
         chatsAtivos.delete(jid);
+        if (altJid) chatsAtivos.delete(altJid);
         salvarChatsAtivos(chatsAtivos);
         console.log(`🛑 Fábrica desativada no chat: ${jid}`);
         await enviarTexto(sock, jid, '🛑 Fábrica de figurinhas *DESATIVADA* neste chat.');
         continue;
       }
 
-      if (!chatsAtivos.has(jid)) continue;
+      if (!ativo) continue;
 
       if (['!audio padrao', '!audio padrão', '!audio reset', '!audio limpar', '!som padrao', '!som padrão'].includes(texto)) {
         const anterior = chatCustomAudios.get(jid);
