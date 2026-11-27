@@ -171,9 +171,9 @@ function renderConnectionScreen() {
     els.authTitle.textContent = 'Escaneie para entrar';
     els.authReason.textContent = `QR Code pronto para leitura (${formatTime(conn.qrUpdatedAt)}). Após escanear, o painel abre automaticamente.`;
   } else if (phase === 'qr_expired') {
-    els.authTitle.textContent = 'QR Code expirado';
+    els.authTitle.textContent = 'Escaneie para entrar';
     els.authReason.classList.add('warn');
-    els.authReason.textContent = 'Passou o tempo limite sem leitura. Clique sobre o QR Code para gerar um novo.';
+    els.authReason.textContent = 'QR code expirado. Clique sobre ele para recarregar ou aguarde a renovação automática em alguns minutos.';
   } else if (phase === 'logged_out') {
     els.authTitle.textContent = 'Sessão desconectada';
     els.authReason.classList.add('error');
@@ -202,7 +202,7 @@ function renderConnectionScreen() {
     els.qrImg.classList.remove('hidden');
     els.qrPlaceholder.classList.add('hidden');
     els.qrCaption.textContent = isExpired
-      ? 'Clique no botão sobre o QR Code para gerar um novo.'
+      ? 'Renova automaticamente em 5 min ou clique para recarregar.'
       : 'O QR Code atualiza automaticamente se expirar.';
   } else {
     els.qrImg.classList.add('hidden');

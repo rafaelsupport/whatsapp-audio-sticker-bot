@@ -61,9 +61,12 @@
         <div class="auth-qr-col">
           <div class="qr-box" id="qrBox">
             <img id="qrImg" class="hidden" alt="QR Code para pareamento no WhatsApp" />
-            <button class="qr-reload-overlay hidden" id="btnQrReload" type="button" title="Gerar novo QR Code">
-              <span class="qr-reload-icon">↻</span>
-              <span>Clique para<br />gerar novo QR</span>
+            <button class="qr-reload-overlay hidden" id="btnQrReload" type="button" title="Selecione para recarregar o QR code">
+              <svg class="qr-reload-icon" viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                <polyline points="21 3 21 9 15 9" />
+              </svg>
+              <span>Selecione para<br />recarregar o QR<br />code</span>
             </button>
             <div class="qr-placeholder" id="qrPlaceholder">
               <div class="spinner"></div>

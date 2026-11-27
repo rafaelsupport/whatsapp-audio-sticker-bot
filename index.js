@@ -31,6 +31,7 @@ const CHATS_DB = path.resolve('./chats_ativos.json');
 const MAX_AUDIO_SECONDS = 5;
 const MAX_VIDEO_SECONDS = 5;
 const MAX_CONCURRENT_JOBS = 2;
+const QR_EXPIRED_AUTO_RETRY_MS = 5 * 60 * 1000;
 const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'esquerda' | 'direita' | 'cima' | 'baixo'
 // ================================================
 
@@ -54,6 +55,7 @@ let connectionPhase = 'connecting';
 let currentQr = '';
 let currentQrUpdatedAt = 0;
 let lastDisconnectInfo = null;
+let qrExpiradoTimer = null;
 
 // Carrega/salva chats autorizados (evita disparar em conversas aleatórias)
 function carregarChatsAtivos() {
@@ -780,7 +782,15 @@ function chatEstaAtivo(...jids) {
   return jids.some((jid) => jid && chatsAtivos.has(jid));
 }
 
+function limparQrExpiradoTimer() {
+  if (qrExpiradoTimer) {
+    clearTimeout(qrExpiradoTimer);
+    qrExpiradoTimer = null;
+  }
+}
+
 function agendarReconexao(delayMs = 3000) {
+  limparQrExpiradoTimer();
   if (reconectando) return;
   reconectando = true;
   setTimeout(() => {
@@ -836,6 +846,7 @@ const webManager = criarGerenciadorWeb({
     lastDisconnect: lastDisconnectInfo
   }),
   reconnect: async () => {
+    limparQrExpiradoTimer();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -849,6 +860,7 @@ const webManager = criarGerenciadorWeb({
     await iniciar();
   },
   resetSession: async () => {
+    limparQrExpiradoTimer();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -864,6 +876,7 @@ const webManager = criarGerenciadorWeb({
     await iniciar();
   },
   logout: async () => {
+    limparQrExpiradoTimer();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -1146,7 +1159,17 @@ async function iniciar() {
 
       if (code === DisconnectReason.timedOut && motivo.includes('QR refs attempts ended')) {
         connectionPhase = 'qr_expired';
-        console.warn('⏳ QR Code expirado no painel web. Clique para gerar um novo.');
+        console.warn('⏳ QR Code expirado no painel web. Aguardando clique (nova tentativa automática em 5 min).');
+        limparQrExpiradoTimer();
+        qrExpiradoTimer = setTimeout(() => {
+          qrExpiradoTimer = null;
+          if (!whatsappConectado && connectionPhase === 'qr_expired') {
+            currentQr = '';
+            currentQrUpdatedAt = 0;
+            connectionPhase = 'connecting';
+            agendarReconexao(500);
+          }
+        }, QR_EXPIRED_AUTO_RETRY_MS);
         return;
       }
 
@@ -1178,6 +1201,7 @@ async function iniciar() {
     }
 
     if (connection === 'open') {
+      limparQrExpiradoTimer();
       whatsappConectado = true;
       connectionPhase = 'open';
       currentQr = '';
