@@ -9,7 +9,6 @@ import makeWASocket, {
   downloadMediaMessage,
   isJidGroup,
   jidNormalizedUser,
-  S_WHATSAPP_NET,
   proto
 } from '@whiskeysockets/baileys';
 import { createRequire } from 'module';
@@ -33,7 +32,8 @@ const MAX_AUDIO_SECONDS = 5;
 const MAX_VIDEO_SECONDS = 5;
 const MAX_CONCURRENT_JOBS = 2;
 const QR_EXPIRED_AUTO_RETRY_MS = 5 * 60 * 1000;
-const MODO_PASSIVO_INTERVAL_MS = 3 * 60 * 1000;
+const PRESENCA_OFFLINE_INTERVAL_MS = 3 * 60 * 1000;
+const MAX_EXTERNAL_AUDIO_BYTES = 15 * 1024 * 1024;
 const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'esquerda' | 'direita' | 'cima' | 'baixo'
 // ================================================
 
@@ -58,8 +58,8 @@ let currentQr = '';
 let currentQrUpdatedAt = 0;
 let lastDisconnectInfo = null;
 let qrExpiradoTimer = null;
-let modoPassivoTimeout = null;
-let modoPassivoInterval = null;
+let presencaOfflineTimeout = null;
+let presencaOfflineInterval = null;
 
 // Carrega/salva chats autorizados (evita disparar em conversas aleatórias)
 function carregarChatsAtivos() {
@@ -325,6 +325,119 @@ function extrairTexto(content) {
   ).trim();
 }
 
+function extrairTextoOuLegenda(content) {
+  return (
+    extrairTexto(content) ||
+    content?.imageMessage?.caption ||
+    content?.videoMessage?.caption ||
+    content?.documentMessage?.caption ||
+    ''
+  ).trim();
+}
+
+function removerUrls(texto = '') {
+  return String(texto || '').replace(/(?:https?:\/\/|www\.)\S+/gi, ' ');
+}
+
+function ehHostMyInstants(hostname) {
+  const host = (hostname || '').toLowerCase();
+  return host === 'myinstants.com' || host.endsWith('.myinstants.com');
+}
+
+function extrairUrlMyInstants(texto = '') {
+  if (!texto) return null;
+  const matches = String(texto).match(/(?:https?:\/\/|www\.)[^\s<>"']+/gi) || [];
+  for (const raw of matches) {
+    const clean = raw.replace(/[),.;!?]+$/, '');
+    const candidate = /^www\./i.test(clean) ? `https://${clean}` : clean;
+    try {
+      const parsed = new URL(candidate);
+      if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && ehHostMyInstants(parsed.hostname)) {
+        return parsed.toString();
+      }
+    } catch {
+      // Ignora URL malformada
+    }
+  }
+  return null;
+}
+
+const MYINSTANTS_AUDIO_PATTERNS = [
+  /<meta[^>]+property=["']og:audio["'][^>]+content=["']([^"']+)["']/i,
+  /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:audio["']/i,
+  /preloadAudioUrl\s*=\s*['"]([^'"]+)['"]/i,
+  /id=["']instant-page-button-element["'][^>]*data-url=["']([^'"]+)["']/i,
+  /onclick=["']play\(['"]([^'"]+)['"]/i,
+  /href=["'](\/media\/sounds\/[^"']+)["']/i,
+  /['"](\/media\/sounds\/[^'"]+)['"]/i
+];
+
+async function resolverAudioUrlMyInstants(urlStr) {
+  const parsed = new URL(urlStr);
+  if (!ehHostMyInstants(parsed.hostname)) {
+    throw new Error('URL precisa pertencer ao domínio myinstants.com');
+  }
+  if (parsed.pathname.startsWith('/media/sounds/') || /\.(mp3|ogg|wav|m4a|aac|opus)$/i.test(parsed.pathname)) {
+    return parsed.toString();
+  }
+
+  const res = await fetch(parsed.toString(), {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,*/*'
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!res.ok) {
+    throw new Error(`MyInstants retornou HTTP ${res.status}`);
+  }
+  const finalUrl = new URL(res.url || parsed.toString());
+  if (!ehHostMyInstants(finalUrl.hostname)) {
+    throw new Error('Redirecionamento fora do domínio myinstants.com');
+  }
+
+  const html = await res.text();
+  for (const regex of MYINSTANTS_AUDIO_PATTERNS) {
+    const match = html.match(regex);
+    if (!match?.[1]) continue;
+    const decoded = match[1].replace(/&amp;/g, '&').trim();
+    const audioUrl = new URL(decoded, finalUrl.toString());
+    if ((audioUrl.protocol === 'http:' || audioUrl.protocol === 'https:') && ehHostMyInstants(audioUrl.hostname)) {
+      return audioUrl.toString();
+    }
+  }
+
+  throw new Error('Áudio não encontrado na página do MyInstants');
+}
+
+async function baixarAudioMyInstants(pageUrl) {
+  const audioUrl = await resolverAudioUrlMyInstants(pageUrl);
+  const res = await fetch(audioUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Referer: pageUrl
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!res.ok) {
+    throw new Error(`Falha ao baixar áudio do MyInstants (HTTP ${res.status})`);
+  }
+  const contentLength = Number(res.headers.get('content-length') || 0);
+  if (contentLength > MAX_EXTERNAL_AUDIO_BYTES) {
+    throw new Error('Áudio do MyInstants excede o limite de tamanho permitido');
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length === 0) {
+    throw new Error('Arquivo de áudio do MyInstants vazio');
+  }
+  if (buf.length > MAX_EXTERNAL_AUDIO_BYTES) {
+    throw new Error('Áudio do MyInstants excede o limite de tamanho permitido');
+  }
+  return buf;
+}
+
 const ALIAS_MODOS_CORTE = [
   ['esquerda', 'esquerda'],
   ['direita', 'direita'],
@@ -337,7 +450,7 @@ const ALIAS_MODOS_CORTE = [
 ];
 
 function detectarModoCorte(caption = '') {
-  const c = (caption || '').toLowerCase();
+  const c = removerUrls(caption).toLowerCase();
   for (const [termo, modo] of ALIAS_MODOS_CORTE) {
     if (c.includes(termo)) return modo;
   }
@@ -345,7 +458,7 @@ function detectarModoCorte(caption = '') {
 }
 
 function devePreservarAudioOriginal(caption = '') {
-  const c = (caption || '')
+  const c = removerUrls(caption)
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
@@ -367,8 +480,15 @@ function construirContextInfoReply(sock, jid, quotedMsg) {
   if (!quotedMsg?.key?.id || !quotedMsg?.message) return null;
   const inner = desembrulharMensagem(quotedMsg.message);
   if (!inner || typeof inner !== 'object') return null;
-  const msgType = ['stickerMessage', 'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage']
-    .find((t) => inner[t]);
+  const msgType = [
+    'stickerMessage',
+    'imageMessage',
+    'videoMessage',
+    'audioMessage',
+    'documentMessage',
+    'extendedTextMessage',
+    'conversation'
+  ].find((t) => inner[t]);
   if (!msgType) return null;
 
   const rawParticipant = quotedMsg.key.fromMe
@@ -376,8 +496,13 @@ function construirContextInfoReply(sock, jid, quotedMsg) {
     : quotedMsg.participant || quotedMsg.key.participant || quotedMsg.key.remoteJid;
   const participant = jidNormalizedUser(rawParticipant || jid);
 
-  const quotedContent = { ...inner[msgType] };
-  delete quotedContent.contextInfo;
+  let quotedContent;
+  if (typeof inner[msgType] === 'string') {
+    quotedContent = inner[msgType];
+  } else {
+    quotedContent = { ...inner[msgType] };
+    delete quotedContent.contextInfo;
+  }
 
   const contextInfo = {
     stanzaId: quotedMsg.key.id,
@@ -450,7 +575,7 @@ async function enviarAudioSticker(sock, jid, webpPath, isAnimated, audioInfo = n
       messageId = await enviarComId();
     }
     console.log(`✅ Audio Sticker (${isAnimated ? 'animado' : 'estático'}) enviado para ${jid} | ID: ${messageId}`);
-    void aplicarModoPassivo(sock, 'pos-sticker');
+    void reforcarPresencaOffline(sock, 'pos-sticker');
   } finally {
     pendingAudioStickers.delete(key);
   }
@@ -495,13 +620,17 @@ function extrairOrigemAudio(content) {
   if (content?.stickerMessage && embeddedAudios.has(content.stickerMessage)) {
     return { msgContent: { audioMessage: embeddedAudios.get(content.stickerMessage) }, isVideo: false, label: 'áudio do sticker' };
   }
+  const myInstantsUrl = extrairUrlMyInstants(extrairTextoOuLegenda(content));
+  if (myInstantsUrl) {
+    return { myInstantsUrl, isVideo: false, label: 'áudio do MyInstants' };
+  }
   return null;
 }
 
 async function enviarTexto(sock, jid, text) {
   const sent = await sock.sendMessage(jid, { text });
   registrarIdEnviado(sent?.key?.id);
-  void aplicarModoPassivo(sock, 'pos-texto');
+  void reforcarPresencaOffline(sock, 'pos-texto');
   return sent;
 }
 
@@ -525,7 +654,9 @@ async function deletarParaMim(sock, jid, msg) {
 }
 
 async function prepararAudioDeOrigem(sock, msgRef, audioSource, tempRawPath, outOggPath, maxSeconds = MAX_AUDIO_SECONDS) {
-  const audioBuffer = await baixarMidia(sock, msgRef, audioSource.msgContent);
+  const audioBuffer = audioSource.myInstantsUrl
+    ? await baixarAudioMyInstants(audioSource.myInstantsUrl)
+    : await baixarMidia(sock, msgRef, audioSource.msgContent);
   fs.writeFileSync(tempRawPath, audioBuffer);
   if (audioSource.isVideo && !(await videoTemAudio(tempRawPath))) {
     return null;
@@ -795,49 +926,35 @@ function limparQrExpiradoTimer() {
   }
 }
 
-function limparModoPassivoTimers() {
-  if (modoPassivoTimeout) {
-    clearTimeout(modoPassivoTimeout);
-    modoPassivoTimeout = null;
+function limparPresencaOfflineTimers() {
+  if (presencaOfflineTimeout) {
+    clearTimeout(presencaOfflineTimeout);
+    presencaOfflineTimeout = null;
   }
-  if (modoPassivoInterval) {
-    clearInterval(modoPassivoInterval);
-    modoPassivoInterval = null;
+  if (presencaOfflineInterval) {
+    clearInterval(presencaOfflineInterval);
+    presencaOfflineInterval = null;
   }
 }
 
-async function aplicarModoPassivo(sock, motivo = 'manutencao') {
+async function reforcarPresencaOffline(sock, motivo = 'manutencao') {
   if (!sock || activeSock !== sock || !whatsappConectado) return;
   try {
     await sock.sendPresenceUpdate('unavailable');
   } catch (err) {
     console.warn(`⚠️  Falha ao enviar presença unavailable (${motivo}): ${err.message || err}`);
   }
-  if (activeSock !== sock || !whatsappConectado) return;
-  try {
-    await sock.query({
-      tag: 'iq',
-      attrs: {
-        to: S_WHATSAPP_NET,
-        xmlns: 'passive',
-        type: 'set'
-      },
-      content: [{ tag: 'passive', attrs: {} }]
-    });
-  } catch (err) {
-    console.warn(`⚠️  Falha ao enviar IQ <passive/> (${motivo}): ${err.message || err}`);
-  }
 }
 
-function agendarModoPassivo(sock) {
-  limparModoPassivoTimers();
-  modoPassivoTimeout = setTimeout(() => {
-    modoPassivoTimeout = null;
-    void aplicarModoPassivo(sock, 'pos-conexao');
+function agendarPresencaOffline(sock) {
+  limparPresencaOfflineTimers();
+  presencaOfflineTimeout = setTimeout(() => {
+    presencaOfflineTimeout = null;
+    void reforcarPresencaOffline(sock, 'pos-conexao');
   }, 1500);
-  modoPassivoInterval = setInterval(() => {
-    void aplicarModoPassivo(sock, 'periodico');
-  }, MODO_PASSIVO_INTERVAL_MS);
+  presencaOfflineInterval = setInterval(() => {
+    void reforcarPresencaOffline(sock, 'periodico');
+  }, PRESENCA_OFFLINE_INTERVAL_MS);
 }
 
 function agendarReconexao(delayMs = 3000) {
@@ -898,7 +1015,7 @@ const webManager = criarGerenciadorWeb({
   }),
   reconnect: async () => {
     limparQrExpiradoTimer();
-    limparModoPassivoTimers();
+    limparPresencaOfflineTimers();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -913,7 +1030,7 @@ const webManager = criarGerenciadorWeb({
   },
   resetSession: async () => {
     limparQrExpiradoTimer();
-    limparModoPassivoTimers();
+    limparPresencaOfflineTimers();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -930,7 +1047,7 @@ const webManager = criarGerenciadorWeb({
   },
   logout: async () => {
     limparQrExpiradoTimer();
-    limparModoPassivoTimers();
+    limparPresencaOfflineTimers();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -991,7 +1108,7 @@ function sincronizarContatosLista(lista = []) {
 }
 
 async function iniciar() {
-  limparModoPassivoTimers();
+  limparPresencaOfflineTimers();
   await garantirAudioPronto();
 
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
@@ -1073,7 +1190,8 @@ async function iniciar() {
       }
 
       const content = desembrulharMensagem(m.message);
-      const texto = extrairTexto(content).toLowerCase();
+      const textoOriginal = extrairTexto(content);
+      const texto = textoOriginal.toLowerCase();
 
       if (ativo || texto.startsWith('!')) {
         console.log(
@@ -1090,7 +1208,7 @@ async function iniciar() {
         await enviarTexto(
           sock,
           jid,
-          '✅ Fábrica de figurinhas com áudio *ATIVADA* neste chat.\nEnvie figurinhas, imagens ou vídeos.\n• Legenda (imagem/vídeo): `inteiro`, `centro`, `esquerda`, `direita`, `cima` ou `baixo`\n• Áudio do próprio vídeo: adicione `original` na legenda\n• Áudio personalizado: responda um áudio com a mídia (ou responda a mídia com um áudio), ou responda um áudio com `!audio` (`!audio padrao` para voltar)\nUse `!desativar` para desligar.'
+          '✅ Fábrica de figurinhas com áudio *ATIVADA* neste chat.\nEnvie figurinhas, imagens ou vídeos.\n• Legenda (imagem/vídeo): `inteiro`, `centro`, `esquerda`, `direita`, `cima` ou `baixo`\n• Áudio do próprio vídeo: adicione `original` na legenda\n• Áudio personalizado: responda um áudio (ou link do MyInstants) com a mídia — ou vice-versa — ou use `!audio <link do MyInstants>` / responda com `!audio` (`!audio padrao` para voltar)\nUse `!desativar` para desligar.'
         );
         continue;
       }
@@ -1114,15 +1232,24 @@ async function iniciar() {
         continue;
       }
 
-      if (texto === '!audio' || texto === '!som') {
+      const matchCmdAudio = textoOriginal.match(/^!(?:audio|som)(?:\s+([\s\S]+))?$/i);
+      if (matchCmdAudio) {
+        const argTexto = (matchCmdAudio[1] || '').trim();
+        const urlArg = argTexto ? extrairUrlMyInstants(argTexto) : null;
         const quoted = obterMensagemCitada(jid, extrairContextInfo(content));
-        const audioSource = quoted ? extrairOrigemAudio(quoted.content) : null;
+
+        let audioSource = null;
+        if (urlArg) {
+          audioSource = { myInstantsUrl: urlArg, isVideo: false, label: 'áudio do MyInstants' };
+        } else if (!argTexto && quoted) {
+          audioSource = extrairOrigemAudio(quoted.content);
+        }
+
         if (!audioSource) {
-          await enviarTexto(
-            sock,
-            jid,
-            'ℹ️ Para usar outro áudio neste chat:\n• *Responda* um áudio (ou vídeo/audio-sticker) com `!audio` para fixá-lo temporariamente aqui\n• Ou *responda* um áudio diretamente enviando a imagem/vídeo/figurinha (e vice-versa)\n• Use `!audio padrao` para voltar ao `som.mp3`.'
-          );
+          const aviso = argTexto
+            ? '⚠️ Link inválido. Envie uma URL do MyInstants (ex: `!audio https://www.myinstants.com/pt/instant/...`) ou responda um áudio/link com `!audio`.'
+            : 'ℹ️ Para usar outro áudio neste chat:\n• Envie `!audio <link do MyInstants>`\n• Ou *responda* um áudio (vídeo, audio-sticker ou link do MyInstants) com `!audio` para fixá-lo aqui\n• Ou *responda* um áudio/link diretamente enviando a imagem/vídeo/figurinha (e vice-versa)\n• Use `!audio padrao` para voltar ao `som.mp3`.';
+          await enviarTexto(sock, jid, aviso);
           continue;
         }
 
@@ -1132,7 +1259,7 @@ async function iniciar() {
         try {
           const info = await prepararAudioDeOrigem(
             sock,
-            { key: quoted.key },
+            quoted ? { key: quoted.key } : null,
             audioSource,
             tempRaw,
             chatOgg,
@@ -1143,20 +1270,24 @@ async function iniciar() {
             continue;
           }
           definirAudioPersonalizadoChat(info, jid, altJid);
-          console.log(`🎵 Áudio personalizado definido para ${jid} (${info.duracao}s)`);
+          console.log(`🎵 ${audioSource.label} definido para ${jid} (${info.duracao}s)`);
           webManager.registrarEvento(jid, {
             direction: 'system',
             kind: 'audio',
-            text: `Áudio personalizado definido via ${texto} (${info.duracao}s)`
+            text: `Áudio personalizado (${audioSource.label}) definido via !audio (${info.duracao}s)`
           });
           await enviarTexto(
             sock,
             jid,
-            `🔊 Áudio personalizado definido para este chat (${info.duracao}s)! As próximas figurinhas aqui usarão esse áudio.\nUse \`!audio padrao\` para voltar ao \`som.mp3\`.`
+            `🔊 ${audioSource.myInstantsUrl ? 'Áudio do MyInstants' : 'Áudio personalizado'} definido para este chat (${info.duracao}s)! As próximas figurinhas aqui usarão esse áudio.\nUse \`!audio padrao\` para voltar ao \`som.mp3\`.`
           );
         } catch (err) {
           console.error('❌ Erro ao definir áudio personalizado:', err.message || err);
-          await enviarTexto(sock, jid, '❌ Não consegui baixar/converter esse áudio.');
+          await enviarTexto(
+            sock,
+            jid,
+            `❌ Não consegui baixar/converter esse áudio${audioSource.myInstantsUrl ? ` do MyInstants (${err.message || err})` : ''}.`
+          );
         } finally {
           if (fs.existsSync(tempRaw)) fs.unlinkSync(tempRaw);
         }
@@ -1168,13 +1299,19 @@ async function iniciar() {
 
       if (extrairMidiaVisual(content)) {
         const quotedAudio = quoted ? extrairOrigemAudio(quoted.content) : null;
+        const captionUrl = !quotedAudio
+          ? extrairUrlMyInstants(content.imageMessage?.caption || content.videoMessage?.caption || '')
+          : null;
+        const customAudioSource = quotedAudio || (captionUrl ? { myInstantsUrl: captionUrl, isVideo: false, label: 'áudio do MyInstants' } : null);
         processarMidiaRecebida(
           sock,
           m,
           content,
           {
             ...entregaOpts,
-            ...(quotedAudio ? { customAudioMsg: { key: quoted.key }, customAudioSource: quotedAudio } : {})
+            ...(customAudioSource
+              ? { customAudioMsg: quotedAudio ? { key: quoted.key } : m, customAudioSource }
+              : {})
           }
         );
         continue;
@@ -1207,7 +1344,7 @@ async function iniciar() {
     }
 
     if (connection === 'close') {
-      limparModoPassivoTimers();
+      limparPresencaOfflineTimers();
       whatsappConectado = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       const motivo = lastDisconnect?.error?.message || 'desconhecido';
@@ -1268,7 +1405,7 @@ async function iniciar() {
       if (!webManager.jaSincronizouAgenda()) {
         sincronizarAgendaWhatsApp(sock, state);
       }
-      agendarModoPassivo(sock);
+      agendarPresencaOffline(sock);
     }
   });
 }
