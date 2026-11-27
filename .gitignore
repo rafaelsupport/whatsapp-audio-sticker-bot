@@ -7,6 +7,7 @@ npm-debug.log*
 auth/
 chats_ativos.json
 contatos_cache.json
+*.har
 
 # Ignora mídias de teste, caches e temporários, mantendo apenas o som padrão
 media/*

@@ -25,6 +25,13 @@ const els = {
   qrPlaceholder: document.getElementById('qrPlaceholder'),
   qrPlaceholderText: document.getElementById('qrPlaceholderText'),
   qrCaption: document.getElementById('qrCaption'),
+  logoutModal: document.getElementById('logoutModal'),
+  btnConfirmLogout: document.getElementById('btnConfirmLogout'),
+  btnCancelLogout: document.getElementById('btnCancelLogout'),
+  aliasModal: document.getElementById('aliasModal'),
+  aliasForm: document.getElementById('aliasForm'),
+  aliasInput: document.getElementById('aliasInput'),
+  btnCancelAlias: document.getElementById('btnCancelAlias'),
   appShell: document.getElementById('appShell'),
   meAvatar: document.getElementById('meAvatar'),
   meName: document.getElementById('meName'),
@@ -158,28 +165,29 @@ function renderConnectionScreen() {
 
   els.authPhaseBadge.textContent = phaseLabels[phase] || 'Desconectado';
   els.authReason.className = 'auth-status-box';
+  els.btnResetAuth.classList.toggle('hidden', phase !== 'logged_out' && phase !== 'replaced');
 
   if (phase === 'qr' && conn.hasQr) {
-    els.authTitle.textContent = 'Escaneie o QR Code para conectar';
+    els.authTitle.textContent = 'Escaneie para entrar';
     els.authReason.textContent = `QR Code pronto para leitura (${formatTime(conn.qrUpdatedAt)}). Após escanear, o painel abre automaticamente.`;
   } else if (phase === 'qr_expired') {
     els.authTitle.textContent = 'QR Code expirado';
     els.authReason.classList.add('warn');
-    els.authReason.textContent = 'Passou o tempo limite sem leitura. Clique no botão circular sobre o QR Code para gerar um novo.';
+    els.authReason.textContent = 'Passou o tempo limite sem leitura. Clique sobre o QR Code para gerar um novo.';
   } else if (phase === 'logged_out') {
-    els.authTitle.textContent = 'Sessão desconectada no celular';
+    els.authTitle.textContent = 'Sessão desconectada';
     els.authReason.classList.add('error');
-    els.authReason.textContent = 'O aparelho foi desconectado (401). Clique em "Gerar novo QR" para limpar a sessão antiga e parear novamente.';
+    els.authReason.textContent = 'O aparelho foi desconectado (401). Clique em "Limpar sessão e gerar novo QR" para parear novamente.';
   } else if (phase === 'replaced') {
-    els.authTitle.textContent = 'Sessão substituída em outro processo';
+    els.authTitle.textContent = 'Sessão substituída';
     els.authReason.classList.add('warn');
-    els.authReason.textContent = 'Outra instância assumiu esta sessão (440). Feche a outra instância e clique em "Reconectar".';
+    els.authReason.textContent = 'Outra instância assumiu esta sessão (440). Feche a outra instância e clique em "Atualizar QR code".';
   } else {
-    els.authTitle.textContent = 'Conectando ao WhatsApp...';
+    els.authTitle.textContent = 'Escaneie para entrar';
     els.authReason.classList.add('warn');
     els.authReason.textContent = last?.reason
       ? `Tentando reconectar (${last.code || '-'} • ${last.reason})...`
-      : 'Inicializando conexão e aguardando resposta do WhatsApp...';
+      : 'Inicializando conexão e gerando QR Code...';
   }
 
   const isExpired = phase === 'qr_expired';
@@ -537,16 +545,29 @@ els.btnRefreshProfile.addEventListener('click', async () => {
   }
 });
 
-els.btnEditAlias.addEventListener('click', async () => {
+els.btnEditAlias.addEventListener('click', () => {
   const chat = state.chats.find((c) => c.jid === state.selectedJid);
   if (!chat) return;
-  const novo = window.prompt('Apelido para exibir neste chat (deixe vazio para usar o padrão):', chat.alias || chat.displayName);
-  if (novo === null) return;
+  els.aliasInput.value = chat.alias || chat.displayName || '';
+  els.aliasModal.classList.remove('hidden');
+  setTimeout(() => els.aliasInput.focus(), 30);
+});
+
+els.btnCancelAlias.addEventListener('click', () => els.aliasModal.classList.add('hidden'));
+els.aliasModal.addEventListener('click', (e) => {
+  if (e.target === els.aliasModal) els.aliasModal.classList.add('hidden');
+});
+
+els.aliasForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!state.selectedJid) return;
+  const novo = els.aliasInput.value.trim();
+  els.aliasModal.classList.add('hidden');
   try {
     await apiJson('/api/chats/alias', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jid: chat.jid, alias: novo })
+      body: JSON.stringify({ jid: state.selectedJid, alias: novo })
     });
     await refreshAll();
     showToast('Nome atualizado no painel');
@@ -604,9 +625,24 @@ async function solicitarNovoQr() {
 els.btnReconnect.addEventListener('click', solicitarNovoQr);
 els.btnQrReload.addEventListener('click', solicitarNovoQr);
 
-els.btnLogout.addEventListener('click', async () => {
-  const ok = window.confirm('Deseja desconectar esta conta do WhatsApp (remover dispositivo conectado) e voltar para o QR Code?');
-  if (!ok) return;
+els.btnLogout.addEventListener('click', () => {
+  els.logoutModal.classList.remove('hidden');
+});
+
+els.btnCancelLogout.addEventListener('click', () => els.logoutModal.classList.add('hidden'));
+els.logoutModal.addEventListener('click', (e) => {
+  if (e.target === els.logoutModal) els.logoutModal.classList.add('hidden');
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    els.logoutModal.classList.add('hidden');
+    els.aliasModal.classList.add('hidden');
+  }
+});
+
+els.btnConfirmLogout.addEventListener('click', async () => {
+  els.logoutModal.classList.add('hidden');
   showToast('Desconectando conta...');
   try {
     state.selectedJid = null;

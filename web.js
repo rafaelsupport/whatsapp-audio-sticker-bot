@@ -38,22 +38,32 @@ export function criarGerenciadorWeb(ctx) {
   function gerarQrSvg(qrText) {
     if (!qrText) return '';
     if (qrText === lastQrText && lastQrSvg) return lastQrSvg;
-    const qr = new QRCode(-1, QRErrorCorrectLevel.L);
+    const qr = new QRCode(-1, QRErrorCorrectLevel.H);
     qr.addData(qrText);
     qr.make();
     const count = qr.getModuleCount();
-    const margin = 4;
+    const margin = 2;
     const size = count + margin * 2;
+    const center = size / 2;
+    const clearRadius = count * 0.135;
+
     let paths = '';
     for (let r = 0; r < count; r++) {
       for (let c = 0; c < count; c++) {
-        if (qr.isDark(r, c)) {
-          paths += `M${c + margin},${r + margin}h1v1h-1z`;
-        }
+        if (!qr.isDark(r, c)) continue;
+        const dx = c + margin + 0.5 - center;
+        const dy = r + margin + 0.5 - center;
+        if (Math.hypot(dx, dy) < clearRadius) continue;
+        paths += `M${c + margin},${r + margin}h1v1h-1z`;
       }
     }
+
+    const badgeR = clearRadius * 0.88;
+    const iconScale = (badgeR * 1.6) / 24;
+    const iconOffset = center - 12 * iconScale;
+
     lastQrText = qrText;
-    lastQrSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#ffffff"/><path d="${paths}" fill="#111b21"/></svg>`;
+    lastQrSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="geometricPrecision"><rect width="${size}" height="${size}" fill="#ffffff"/><path d="${paths}" fill="#111b21" shape-rendering="crispEdges"/><circle cx="${center}" cy="${center}" r="${badgeR.toFixed(2)}" fill="#ffffff"/><circle cx="${center}" cy="${center}" r="${(badgeR * 0.84).toFixed(2)}" fill="#25d366"/><g transform="translate(${iconOffset.toFixed(2)},${iconOffset.toFixed(2)}) scale(${iconScale.toFixed(4)})"><path fill="#ffffff" d="M12 2a9.93 9.93 0 0 0-8.57 14.95L2 22l5.2-1.36A9.94 9.94 0 1 0 12 2Zm5.8 14.12c-.24.68-1.4 1.3-1.95 1.38-.52.08-1.18.11-1.9-.12-.44-.14-1-.33-1.72-.64-3.02-1.3-5-4.36-5.15-4.56-.15-.2-1.23-1.64-1.23-3.13s.78-2.22 1.06-2.52c.28-.3.6-.38.8-.38h.58c.19 0 .44-.07.69.52.25.6.86 2.1.94 2.25.07.15.12.33.02.53-.1.2-.15.33-.3.5-.15.18-.32.4-.45.54-.15.15-.3.31-.13.61.18.3.78 1.28 1.67 2.08 1.15 1.02 2.11 1.34 2.41 1.49.3.15.48.13.66-.08.18-.2.75-.88.95-1.18.2-.3.4-.25.68-.15.28.1 1.77.84 2.07.99.3.15.5.22.57.35.08.13.08.73-.16 1.41Z"/></g></svg>`;
     return lastQrSvg;
   }
 
