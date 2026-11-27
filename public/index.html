@@ -8,6 +8,52 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <!-- Tela de Conexão / QR Code estilo WhatsApp Web -->
+  <div class="auth-screen hidden" id="authScreen">
+    <div class="auth-header">
+      <div class="auth-brand">
+        <img src="/favicon.png" alt="WhatsApp" class="auth-brand-icon" />
+        <span>Audio Sticker • Conexão WhatsApp</span>
+      </div>
+      <div class="auth-pill" id="authPhaseBadge">Conectando...</div>
+    </div>
+
+    <div class="auth-card">
+      <div class="auth-instructions">
+        <h1 id="authTitle">Conectar ao WhatsApp</h1>
+        <p class="auth-subtitle" id="authSubtitle">
+          Acompanhe o status da sessão e leia o QR Code direto por aqui, sem abrir logs no terminal.
+        </p>
+
+        <ol class="auth-steps">
+          <li>Abra o <strong>WhatsApp</strong> no seu celular</li>
+          <li>Toque em <strong>Mais opções</strong> (⋮) ou <strong>Configurações</strong> e selecione <strong>Dispositivos conectados</strong></li>
+          <li>Toque em <strong>Conectar dispositivo</strong></li>
+          <li>Aponte a câmera para o QR Code ao lado</li>
+        </ol>
+
+        <div class="auth-status-box" id="authReason">Aguardando QR Code...</div>
+
+        <div class="auth-actions">
+          <button class="btn" id="btnReconnect">🔄 Reconectar</button>
+          <button class="btn btn-danger" id="btnResetAuth">🗑️ Gerar novo QR (limpar sessão)</button>
+          <button class="btn btn-secondary" id="btnViewOffline">👁️ Ver painel offline</button>
+        </div>
+      </div>
+
+      <div class="auth-qr-col">
+        <div class="qr-box">
+          <img id="qrImg" class="hidden" alt="QR Code para pareamento no WhatsApp" />
+          <div class="qr-placeholder" id="qrPlaceholder">
+            <div class="spinner"></div>
+            <span id="qrPlaceholderText">Aguardando QR Code...</span>
+          </div>
+        </div>
+        <div class="qr-caption" id="qrCaption">O QR Code atualiza automaticamente.</div>
+      </div>
+    </div>
+  </div>
+
   <div class="app-shell" id="appShell">
     <!-- Barra lateral esquerda (Chats) -->
     <aside class="sidebar">

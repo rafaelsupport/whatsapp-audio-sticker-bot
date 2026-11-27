@@ -4,10 +4,25 @@ const state = {
   filter: 'active',
   search: '',
   status: null,
-  avatarBust: new Map()
+  avatarBust: new Map(),
+  bypassOfflineView: false,
+  wasConnected: null,
+  lastQrUpdatedAt: 0
 };
 
 const els = {
+  authScreen: document.getElementById('authScreen'),
+  authPhaseBadge: document.getElementById('authPhaseBadge'),
+  authTitle: document.getElementById('authTitle'),
+  authSubtitle: document.getElementById('authSubtitle'),
+  authReason: document.getElementById('authReason'),
+  btnReconnect: document.getElementById('btnReconnect'),
+  btnResetAuth: document.getElementById('btnResetAuth'),
+  btnViewOffline: document.getElementById('btnViewOffline'),
+  qrImg: document.getElementById('qrImg'),
+  qrPlaceholder: document.getElementById('qrPlaceholder'),
+  qrPlaceholderText: document.getElementById('qrPlaceholderText'),
+  qrCaption: document.getElementById('qrCaption'),
   appShell: document.getElementById('appShell'),
   meAvatar: document.getElementById('meAvatar'),
   meName: document.getElementById('meName'),
@@ -105,18 +120,94 @@ async function apiJson(url, opts) {
   return data;
 }
 
+function renderConnectionScreen() {
+  const s = state.status;
+  if (!s) return;
+
+  if (s.connected) {
+    state.bypassOfflineView = false;
+    els.authScreen.classList.add('hidden');
+    els.appShell.classList.remove('hidden');
+    return;
+  }
+
+  if (state.bypassOfflineView) {
+    els.authScreen.classList.add('hidden');
+    els.appShell.classList.remove('hidden');
+    return;
+  }
+
+  els.authScreen.classList.remove('hidden');
+  els.appShell.classList.add('hidden');
+
+  const conn = s.connection || {};
+  const phase = conn.phase || 'connecting';
+  const last = conn.lastDisconnect;
+
+  const phaseLabels = {
+    qr: 'QR Code pronto',
+    connecting: 'Conectando...',
+    close: 'Reconectando...',
+    logged_out: 'Sessão deslogada (401)',
+    replaced: 'Sessão substituída (440)'
+  };
+
+  els.authPhaseBadge.textContent = phaseLabels[phase] || 'Desconectado';
+  els.authReason.className = 'auth-status-box';
+
+  if (phase === 'qr' && conn.hasQr) {
+    els.authTitle.textContent = 'Escaneie o QR Code para conectar';
+    els.authReason.textContent = `QR Code pronto para leitura (${formatTime(conn.qrUpdatedAt)}). Após escanear, o painel abre automaticamente.`;
+  } else if (phase === 'logged_out') {
+    els.authTitle.textContent = 'Sessão desconectada no celular';
+    els.authReason.classList.add('error');
+    els.authReason.textContent = 'O aparelho foi desconectado (401). Clique em "Gerar novo QR" para limpar a sessão antiga e parear novamente.';
+  } else if (phase === 'replaced') {
+    els.authTitle.textContent = 'Sessão substituída em outro processo';
+    els.authReason.classList.add('warn');
+    els.authReason.textContent = 'Outra instância assumiu esta sessão (440). Feche a outra instância e clique em "Reconectar".';
+  } else {
+    els.authTitle.textContent = 'Conectando ao WhatsApp...';
+    els.authReason.classList.add('warn');
+    els.authReason.textContent = last?.reason
+      ? `Tentando reconectar (${last.code || '-'} • ${last.reason})...`
+      : 'Inicializando conexão e aguardando resposta do WhatsApp...';
+  }
+
+  if (conn.hasQr) {
+    if (state.lastQrUpdatedAt !== conn.qrUpdatedAt) {
+      state.lastQrUpdatedAt = conn.qrUpdatedAt;
+      els.qrImg.src = `/api/qr.svg?t=${conn.qrUpdatedAt}`;
+    }
+    els.qrImg.classList.remove('hidden');
+    els.qrPlaceholder.classList.add('hidden');
+    els.qrCaption.textContent = 'O QR Code atualiza automaticamente se expirar.';
+  } else {
+    els.qrImg.classList.add('hidden');
+    els.qrPlaceholder.classList.remove('hidden');
+    els.qrPlaceholderText.textContent =
+      phase === 'logged_out'
+        ? 'Sessão expirada. Clique em "Gerar novo QR".'
+        : 'Aguardando QR Code...';
+    els.qrCaption.textContent = 'Assim que conectar, seu painel aparece automaticamente.';
+  }
+}
+
 function renderStatus() {
   const s = state.status;
   if (!s) return;
+
+  renderConnectionScreen();
 
   els.meName.textContent = s.me.name || 'Meu WhatsApp';
   renderAvatar(els.meAvatar, s.me.lid || s.me.id, s.me.name);
 
   els.connBadge.classList.toggle('online', s.connected);
   els.connBadge.classList.toggle('offline', !s.connected);
+  els.connBadge.classList.toggle('clickable', !s.connected);
   els.connText.textContent = s.connected
     ? `Online • ${s.me.formattedPhone || 'conectado'}`
-    : 'Reconectando...';
+    : 'Desconectado • clique p/ QR';
 
   els.statActive.textContent = String(s.activeCount);
   els.statQueue.textContent = `${s.queue.running} ativas / ${s.queue.pending} na fila`;
@@ -466,5 +557,48 @@ els.sendForm.addEventListener('submit', async (e) => {
   }
 });
 
-refreshAll();
-setInterval(refreshAll, 3000);
+async function pollLoop() {
+  await refreshAll();
+  const delay = state.status?.connected ? 3000 : 1500;
+  setTimeout(pollLoop, delay);
+}
+
+els.connBadge.addEventListener('click', () => {
+  if (!state.status?.connected) {
+    state.bypassOfflineView = false;
+    renderConnectionScreen();
+  }
+});
+
+els.btnViewOffline.addEventListener('click', () => {
+  state.bypassOfflineView = true;
+  renderConnectionScreen();
+});
+
+els.btnReconnect.addEventListener('click', async () => {
+  showToast('Reconectando ao WhatsApp...');
+  try {
+    await apiJson('/api/auth/reconnect', { method: 'POST' });
+    await refreshAll();
+  } catch (err) {
+    showToast(err.message);
+  }
+});
+
+els.btnResetAuth.addEventListener('click', async () => {
+  const phase = state.status?.connection?.phase;
+  if (phase !== 'logged_out') {
+    const ok = window.confirm('Isso vai apagar a sessão atual em ./auth e gerar um novo QR Code para escanear no celular. Deseja continuar?');
+    if (!ok) return;
+  }
+  showToast('Gerando novo QR Code...');
+  try {
+    state.lastQrUpdatedAt = 0;
+    await apiJson('/api/auth/reset', { method: 'POST' });
+    await refreshAll();
+  } catch (err) {
+    showToast(err.message);
+  }
+});
+
+pollLoop();

@@ -1,8 +1,13 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { isJidGroup, jidDecode, jidNormalizedUser } from '@whiskeysockets/baileys';
+
+const require = createRequire(import.meta.url);
+const QRCode = require('qrcode-terminal/vendor/QRCode');
+const QRErrorCorrectLevel = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
@@ -27,6 +32,30 @@ export function criarGerenciadorWeb(ctx) {
   const chatEvents = new Map();
   const chatStats = new Map();
   let agendaSincronizada = false;
+  let lastQrText = '';
+  let lastQrSvg = '';
+
+  function gerarQrSvg(qrText) {
+    if (!qrText) return '';
+    if (qrText === lastQrText && lastQrSvg) return lastQrSvg;
+    const qr = new QRCode(-1, QRErrorCorrectLevel.L);
+    qr.addData(qrText);
+    qr.make();
+    const count = qr.getModuleCount();
+    const margin = 4;
+    const size = count + margin * 2;
+    let paths = '';
+    for (let r = 0; r < count; r++) {
+      for (let c = 0; c < count; c++) {
+        if (qr.isDark(r, c)) {
+          paths += `M${c + margin},${r + margin}h1v1h-1z`;
+        }
+      }
+    }
+    lastQrText = qrText;
+    lastQrSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#ffffff"/><path d="${paths}" fill="#111b21"/></svg>`;
+    return lastQrSvg;
+  }
 
   function jidIgnorado(jid) {
     return !jid || jid === 'status@broadcast' || jid.endsWith('@newsletter') || jid === '_meta';
@@ -339,8 +368,15 @@ export function criarGerenciadorWeb(ctx) {
     if (req.method === 'GET' && pathname === '/api/status') {
       const me = ctx.getMe();
       const mePhone = extrairTelefoneDeJid(me?.id);
+      const conn = ctx.getConnectionInfo();
       return enviarJson(res, 200, {
-        connected: ctx.isConnected(),
+        connected: conn.connected,
+        connection: {
+          phase: conn.phase,
+          hasQr: Boolean(conn.qr),
+          qrUpdatedAt: conn.qrUpdatedAt || 0,
+          lastDisconnect: conn.lastDisconnect || null
+        },
         me: {
           id: me?.id || '',
           lid: me?.lid || '',
@@ -353,6 +389,20 @@ export function criarGerenciadorWeb(ctx) {
         defaultAudio: ctx.getDefaultAudioInfo(),
         queue: ctx.getQueueInfo()
       });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/qr.svg') {
+      const conn = ctx.getConnectionInfo();
+      if (!conn.qr || conn.connected) {
+        res.writeHead(204, { 'Cache-Control': 'no-store' });
+        return res.end();
+      }
+      const svg = gerarQrSvg(conn.qr);
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
+      return res.end(svg);
     }
 
     if (req.method === 'GET' && pathname === '/api/chats') {
@@ -476,6 +526,16 @@ export function criarGerenciadorWeb(ctx) {
       if (!ctx.isConnected()) return enviarJson(res, 503, { error: 'Bot desconectado do WhatsApp' });
       const count = await ctx.syncContacts();
       return enviarJson(res, 200, { ok: true, count });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/reconnect') {
+      await ctx.reconnect();
+      return enviarJson(res, 200, { ok: true });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/auth/reset') {
+      await ctx.resetSession();
+      return enviarJson(res, 200, { ok: true });
     }
 
     if (req.method === 'POST' && pathname === '/api/chats/send') {

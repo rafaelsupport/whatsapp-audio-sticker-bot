@@ -43,14 +43,18 @@ const embeddedAudios = new WeakMap();
 const sentByBotIds = new Set();
 const processedIds = new Set();
 const filaProcessamento = [];
-const startTimeSec = Math.floor(Date.now() / 1000);
 
+let startTimeSec = Math.floor(Date.now() / 1000);
 let audioCache = { mtimeMs: 0, duracao: MAX_AUDIO_SECONDS };
 let reconectando = false;
 let jobsEmExecucao = 0;
 let activeSock = null;
 let activeState = null;
 let whatsappConectado = false;
+let connectionPhase = 'connecting';
+let currentQr = '';
+let currentQrUpdatedAt = 0;
+let lastDisconnectInfo = null;
 
 // Carrega/salva chats autorizados (evita disparar em conversas aleatórias)
 function carregarChatsAtivos() {
@@ -818,6 +822,41 @@ const webManager = criarGerenciadorWeb({
   syncContacts: async () => {
     if (!activeSock || !activeState) throw new Error('Socket indisponível');
     return sincronizarAgendaWhatsApp(activeSock, activeState);
+  },
+  getConnectionInfo: () => ({
+    connected: whatsappConectado,
+    phase: connectionPhase,
+    qr: currentQr,
+    qrUpdatedAt: currentQrUpdatedAt,
+    lastDisconnect: lastDisconnectInfo
+  }),
+  reconnect: async () => {
+    const oldSock = activeSock;
+    activeSock = null;
+    whatsappConectado = false;
+    connectionPhase = 'connecting';
+    currentQr = '';
+    reconectando = false;
+    try {
+      oldSock?.ws?.close();
+    } catch {}
+    await iniciar();
+  },
+  resetSession: async () => {
+    const oldSock = activeSock;
+    activeSock = null;
+    whatsappConectado = false;
+    connectionPhase = 'connecting';
+    currentQr = '';
+    currentQrUpdatedAt = 0;
+    lastDisconnectInfo = null;
+    reconectando = false;
+    startTimeSec = Math.floor(Date.now() / 1000);
+    try {
+      oldSock?.ws?.close();
+    } catch {}
+    fs.rmSync(path.resolve('./auth'), { recursive: true, force: true });
+    await iniciar();
   }
 });
 
@@ -883,6 +922,7 @@ async function iniciar() {
   sock.ev.on('contacts.update', sincronizarContatosLista);
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (activeSock !== sock) return;
     for (const m of messages) {
       const id = m.key?.id;
       const jid = m.key?.remoteJid;
@@ -1061,29 +1101,48 @@ async function iniciar() {
   });
 
   sock.ev.on('connection.update', (update) => {
+    if (activeSock !== sock) return;
     const { connection, lastDisconnect, qr } = update;
-    if (qr) qrcode.generate(qr, { small: true });
+
+    if (qr) {
+      currentQr = qr;
+      currentQrUpdatedAt = Date.now();
+      connectionPhase = 'qr';
+      whatsappConectado = false;
+      qrcode.generate(qr, { small: true });
+    } else if (connection === 'connecting' && connectionPhase !== 'qr') {
+      connectionPhase = 'connecting';
+    }
 
     if (connection === 'close') {
       whatsappConectado = false;
+      currentQr = '';
       const code = lastDisconnect?.error?.output?.statusCode;
       const motivo = lastDisconnect?.error?.message || 'desconhecido';
+      lastDisconnectInfo = { code: code || null, reason: motivo, at: Date.now() };
       console.warn(`⚠️  Conexão fechada | statusCode: ${code} | motivo: ${motivo}`);
 
       if (code === DisconnectReason.loggedOut) {
-        console.error('❌ Sessão deslogada (401). Apague ./auth e conecte novamente.');
+        connectionPhase = 'logged_out';
+        console.error('❌ Sessão deslogada (401). Gere um novo QR Code pelo painel web ou apague ./auth.');
         return;
       }
       if (code === DisconnectReason.connectionReplaced) {
+        connectionPhase = 'replaced';
         console.error('❌ Sessão substituída (440). Feche outra instância rodando.');
         return;
       }
 
+      connectionPhase = 'close';
       agendarReconexao(3000);
     }
 
     if (connection === 'open') {
       whatsappConectado = true;
+      connectionPhase = 'open';
+      currentQr = '';
+      currentQrUpdatedAt = 0;
+      lastDisconnectInfo = null;
       console.log('🟢 Fábrica de Audio Stickers online!');
       console.log(`📌 Chats ativos: ${chatsAtivos.size > 0 ? [...chatsAtivos].join(', ') : 'nenhum (envie !ativar em um chat)'}`);
       if (!webManager.jaSincronizouAgenda()) {
