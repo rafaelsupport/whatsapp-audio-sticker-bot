@@ -65,7 +65,8 @@ http://127.0.0.1:3000
 
 - `!ativar` — habilita o bot no chat atual (salvo em `chats_ativos.json`).
 - `!desativar` — desabilita o bot no chat atual.
-- `!audio` (ou `!som`) respondendo a um áudio, arquivo de áudio, vídeo com som ou Audio Sticker — define temporariamente esse áudio como padrão apenas para este chat.
+- `!audio` (ou `!som`) respondendo a um áudio, arquivo de áudio, vídeo com som, Audio Sticker ou mensagem com link do **MyInstants** — define temporariamente esse áudio como padrão apenas para este chat.
+- `!audio <link do MyInstants>` (ou `!som <link>`) — baixa o som diretamente da URL do MyInstants (ex.: `https://www.myinstants.com/pt/instant/vine-boom-sound-70972/`) e o define como áudio temporário deste chat.
 - `!audio padrao` (ou `!audio reset`) — faz o chat voltar a usar `./media/som.mp3`.
 
 ### Mídias suportadas (em chats ativados)
@@ -77,9 +78,10 @@ http://127.0.0.1:3000
 
 ### Usando outro áudio (sem alterar `./media/som.mp3`)
 
-- **Responder a um áudio com mídia:** responda um áudio (nota de voz, MP3/arquivo de áudio, vídeo com som ou outro Audio Sticker) enviando a figurinha, imagem ou vídeo.
-- **Responder a uma mídia com áudio:** responda uma figurinha, imagem ou vídeo enviando uma nota de voz ou arquivo de áudio.
-- **Áudio temporário por chat:** responda um áudio com `!audio` para aplicá-lo em todas as próximas figurinhas do chat (e `!audio padrao` para voltar).
+- **Responder a um áudio com mídia:** responda um áudio (nota de voz, MP3/arquivo de áudio, vídeo com som, outro Audio Sticker ou mensagem com link do MyInstants) enviando a figurinha, imagem ou vídeo.
+- **Responder a uma mídia com áudio:** responda uma figurinha, imagem ou vídeo enviando uma nota de voz, arquivo de áudio ou um link do MyInstants (ex.: `https://www.myinstants.com/pt/instant/vine-boom-sound-70972/`).
+- **Link do MyInstants na legenda:** envie uma imagem ou vídeo com a URL do MyInstants na legenda (pode combinar com as opções de corte).
+- **Áudio temporário por chat:** envie `!audio <link do MyInstants>` ou responda um áudio/link com `!audio` para aplicá-lo em todas as próximas figurinhas do chat (e `!audio padrao` para voltar).
 - **Preservar áudio do próprio vídeo:** adicione `original` (ou `preservar`, `manter audio`, `manter som`) na legenda do vídeo.
 
 ### Opções de corte via legenda (`caption`)
