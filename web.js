@@ -538,6 +538,11 @@ export function criarGerenciadorWeb(ctx) {
       return enviarJson(res, 200, { ok: true });
     }
 
+    if (req.method === 'POST' && pathname === '/api/auth/logout') {
+      await ctx.logout();
+      return enviarJson(res, 200, { ok: true });
+    }
+
     if (req.method === 'POST' && pathname === '/api/chats/send') {
       const { jid, text } = await lerJsonBody(req);
       const msgText = String(text || '').trim();
@@ -587,6 +592,10 @@ export function criarGerenciadorWeb(ctx) {
     jaSincronizouAgenda: () => agendaSincronizada,
     marcarAgendaSincronizada: () => {
       agendaSincronizada = true;
+      agendarSalvarContatos();
+    },
+    resetarAgendaSincronizada: () => {
+      agendaSincronizada = false;
       agendarSalvarContatos();
     }
   };

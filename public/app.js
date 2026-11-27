@@ -19,7 +19,9 @@ const els = {
   btnReconnect: document.getElementById('btnReconnect'),
   btnResetAuth: document.getElementById('btnResetAuth'),
   btnViewOffline: document.getElementById('btnViewOffline'),
+  qrBox: document.getElementById('qrBox'),
   qrImg: document.getElementById('qrImg'),
+  btnQrReload: document.getElementById('btnQrReload'),
   qrPlaceholder: document.getElementById('qrPlaceholder'),
   qrPlaceholderText: document.getElementById('qrPlaceholderText'),
   qrCaption: document.getElementById('qrCaption'),
@@ -31,6 +33,7 @@ const els = {
   btnSyncContacts: document.getElementById('btnSyncContacts'),
   btnPlayDefault: document.getElementById('btnPlayDefault'),
   btnRefreshAll: document.getElementById('btnRefreshAll'),
+  btnLogout: document.getElementById('btnLogout'),
   defaultAudioPlayer: document.getElementById('defaultAudioPlayer'),
   searchInput: document.getElementById('searchInput'),
   countActive: document.getElementById('countActive'),
@@ -146,6 +149,7 @@ function renderConnectionScreen() {
 
   const phaseLabels = {
     qr: 'QR Code pronto',
+    qr_expired: 'QR Code expirado',
     connecting: 'Conectando...',
     close: 'Reconectando...',
     logged_out: 'Sessão deslogada (401)',
@@ -158,6 +162,10 @@ function renderConnectionScreen() {
   if (phase === 'qr' && conn.hasQr) {
     els.authTitle.textContent = 'Escaneie o QR Code para conectar';
     els.authReason.textContent = `QR Code pronto para leitura (${formatTime(conn.qrUpdatedAt)}). Após escanear, o painel abre automaticamente.`;
+  } else if (phase === 'qr_expired') {
+    els.authTitle.textContent = 'QR Code expirado';
+    els.authReason.classList.add('warn');
+    els.authReason.textContent = 'Passou o tempo limite sem leitura. Clique no botão circular sobre o QR Code para gerar um novo.';
   } else if (phase === 'logged_out') {
     els.authTitle.textContent = 'Sessão desconectada no celular';
     els.authReason.classList.add('error');
@@ -174,6 +182,10 @@ function renderConnectionScreen() {
       : 'Inicializando conexão e aguardando resposta do WhatsApp...';
   }
 
+  const isExpired = phase === 'qr_expired';
+  els.qrBox.classList.toggle('expired', isExpired && conn.hasQr);
+  els.btnQrReload.classList.toggle('hidden', !isExpired);
+
   if (conn.hasQr) {
     if (state.lastQrUpdatedAt !== conn.qrUpdatedAt) {
       state.lastQrUpdatedAt = conn.qrUpdatedAt;
@@ -181,7 +193,9 @@ function renderConnectionScreen() {
     }
     els.qrImg.classList.remove('hidden');
     els.qrPlaceholder.classList.add('hidden');
-    els.qrCaption.textContent = 'O QR Code atualiza automaticamente se expirar.';
+    els.qrCaption.textContent = isExpired
+      ? 'Clique no botão sobre o QR Code para gerar um novo.'
+      : 'O QR Code atualiza automaticamente se expirar.';
   } else {
     els.qrImg.classList.add('hidden');
     els.qrPlaceholder.classList.remove('hidden');
@@ -202,6 +216,7 @@ function renderStatus() {
   els.meName.textContent = s.me.name || 'Meu WhatsApp';
   renderAvatar(els.meAvatar, s.me.lid || s.me.id, s.me.name);
 
+  els.btnLogout.classList.toggle('hidden', !s.connected);
   els.connBadge.classList.toggle('online', s.connected);
   els.connBadge.classList.toggle('offline', !s.connected);
   els.connBadge.classList.toggle('clickable', !s.connected);
@@ -575,10 +590,28 @@ els.btnViewOffline.addEventListener('click', () => {
   renderConnectionScreen();
 });
 
-els.btnReconnect.addEventListener('click', async () => {
-  showToast('Reconectando ao WhatsApp...');
+async function solicitarNovoQr() {
+  showToast('Gerando novo QR Code...');
   try {
+    state.lastQrUpdatedAt = 0;
     await apiJson('/api/auth/reconnect', { method: 'POST' });
+    await refreshAll();
+  } catch (err) {
+    showToast(err.message);
+  }
+}
+
+els.btnReconnect.addEventListener('click', solicitarNovoQr);
+els.btnQrReload.addEventListener('click', solicitarNovoQr);
+
+els.btnLogout.addEventListener('click', async () => {
+  const ok = window.confirm('Deseja desconectar esta conta do WhatsApp (remover dispositivo conectado) e voltar para o QR Code?');
+  if (!ok) return;
+  showToast('Desconectando conta...');
+  try {
+    state.selectedJid = null;
+    state.lastQrUpdatedAt = 0;
+    await apiJson('/api/auth/logout', { method: 'POST' });
     await refreshAll();
   } catch (err) {
     showToast(err.message);

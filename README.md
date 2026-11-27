@@ -34,7 +34,7 @@ Coloque o áudio padrão em `./media/som.mp3` (já incluído no repositório com
 node index.js
 ```
 
-Na primeira execução, escaneie o QR Code exibido no terminal para autenticar a sessão em `./auth`.
+Na primeira execução, acesse o painel web (`http://127.0.0.1:3000`) e escaneie o QR Code diretamente no navegador para autenticar a sessão em `./auth`.
 
 ### Rodando em background com PM2
 
@@ -54,7 +54,7 @@ Ao iniciar o bot, um painel web inspirado no WhatsApp Web Dark sobe automaticame
 http://127.0.0.1:3000
 ```
 
-- Mostra status da conexão em tempo real e exibe o **QR Code na própria interface** quando desconectado (com botões de reconexão e geração de novo QR Code), abrindo o painel automaticamente após o pareamento.
+- Mostra status da conexão em tempo real e exibe o **QR Code na própria interface** quando desconectado (com renovação automática, overlay de recarregamento quando expira, e botão de **Sair da conta** para desvincular o aparelho pelo painel), abrindo o painel automaticamente após o pareamento.
 - Mostra chats ativos e contatos descobertos com **nome**, **número formatado** (resolvendo `@lid` via mapeamento do Baileys) e **foto de perfil**.
 - Permite **ativar/desativar** chats, **resetar áudio personalizado**, **definir apelidos**, **ouvir o `som.mp3` padrão**, **acompanhar a timeline de stickers gerados** e **enviar mensagens** pelo bot.
 - Porta e host podem ser alterados via variáveis de ambiente `WEB_PORT` (padrão `3000`) e `WEB_HOST` (padrão `127.0.0.1`, ou `0.0.0.0` para acessar na rede local).

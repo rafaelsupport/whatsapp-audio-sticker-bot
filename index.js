@@ -18,7 +18,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import P from 'pino';
-import qrcode from 'qrcode-terminal';
 import { criarGerenciadorWeb } from './web.js';
 
 const require = createRequire(import.meta.url);
@@ -793,6 +792,12 @@ function agendarReconexao(delayMs = 3000) {
   }, delayMs);
 }
 
+function limparEstadoSessaoLocal() {
+  fs.rmSync(path.resolve('./auth'), { recursive: true, force: true });
+  webManager.resetarAgendaSincronizada();
+  startTimeSec = Math.floor(Date.now() / 1000);
+}
+
 const webManager = criarGerenciadorWeb({
   getSock: () => activeSock,
   isConnected: () => whatsappConectado,
@@ -836,6 +841,7 @@ const webManager = criarGerenciadorWeb({
     whatsappConectado = false;
     connectionPhase = 'connecting';
     currentQr = '';
+    currentQrUpdatedAt = 0;
     reconectando = false;
     try {
       oldSock?.ws?.close();
@@ -851,11 +857,29 @@ const webManager = criarGerenciadorWeb({
     currentQrUpdatedAt = 0;
     lastDisconnectInfo = null;
     reconectando = false;
-    startTimeSec = Math.floor(Date.now() / 1000);
     try {
       oldSock?.ws?.close();
     } catch {}
-    fs.rmSync(path.resolve('./auth'), { recursive: true, force: true });
+    limparEstadoSessaoLocal();
+    await iniciar();
+  },
+  logout: async () => {
+    const oldSock = activeSock;
+    activeSock = null;
+    whatsappConectado = false;
+    connectionPhase = 'connecting';
+    currentQr = '';
+    currentQrUpdatedAt = 0;
+    lastDisconnectInfo = null;
+    reconectando = false;
+    try {
+      await oldSock?.logout('Logout pelo painel web');
+    } catch {}
+    try {
+      oldSock?.ws?.close();
+    } catch {}
+    limparEstadoSessaoLocal();
+    console.log('🚪 Sessão desconectada pelo painel web. Gerando novo QR Code...');
     await iniciar();
   }
 });
@@ -1109,22 +1133,38 @@ async function iniciar() {
       currentQrUpdatedAt = Date.now();
       connectionPhase = 'qr';
       whatsappConectado = false;
-      qrcode.generate(qr, { small: true });
+      console.log('📱 Novo QR Code disponível no painel web.');
     } else if (connection === 'connecting' && connectionPhase !== 'qr') {
       connectionPhase = 'connecting';
     }
 
     if (connection === 'close') {
       whatsappConectado = false;
-      currentQr = '';
       const code = lastDisconnect?.error?.output?.statusCode;
       const motivo = lastDisconnect?.error?.message || 'desconhecido';
       lastDisconnectInfo = { code: code || null, reason: motivo, at: Date.now() };
+
+      if (code === DisconnectReason.timedOut && motivo.includes('QR refs attempts ended')) {
+        connectionPhase = 'qr_expired';
+        console.warn('⏳ QR Code expirado no painel web. Clique para gerar um novo.');
+        return;
+      }
+
+      currentQr = '';
       console.warn(`⚠️  Conexão fechada | statusCode: ${code} | motivo: ${motivo}`);
 
       if (code === DisconnectReason.loggedOut) {
-        connectionPhase = 'logged_out';
-        console.error('❌ Sessão deslogada (401). Gere um novo QR Code pelo painel web ou apague ./auth.');
+        const tinhaSessao = Boolean(state.creds?.me?.id);
+        activeSock = null;
+        limparEstadoSessaoLocal();
+        if (tinhaSessao) {
+          connectionPhase = 'connecting';
+          console.warn('⚠️  Sessão deslogada (401). Limpando ./auth para gerar novo QR Code automaticamente...');
+          agendarReconexao(1000);
+        } else {
+          connectionPhase = 'logged_out';
+          console.error('❌ Sessão deslogada (401). Clique em "Gerar novo QR" no painel web.');
+        }
         return;
       }
       if (code === DisconnectReason.connectionReplaced) {
