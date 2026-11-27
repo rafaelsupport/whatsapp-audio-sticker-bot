@@ -9,6 +9,7 @@ import makeWASocket, {
   downloadMediaMessage,
   isJidGroup,
   jidNormalizedUser,
+  S_WHATSAPP_NET,
   proto
 } from '@whiskeysockets/baileys';
 import { createRequire } from 'module';
@@ -32,6 +33,7 @@ const MAX_AUDIO_SECONDS = 5;
 const MAX_VIDEO_SECONDS = 5;
 const MAX_CONCURRENT_JOBS = 2;
 const QR_EXPIRED_AUTO_RETRY_MS = 5 * 60 * 1000;
+const MODO_PASSIVO_INTERVAL_MS = 3 * 60 * 1000;
 const MODO_CORTE_PADRAO = 'inteiro'; // 'inteiro' | 'centro' | 'esquerda' | 'direita' | 'cima' | 'baixo'
 // ================================================
 
@@ -56,6 +58,8 @@ let currentQr = '';
 let currentQrUpdatedAt = 0;
 let lastDisconnectInfo = null;
 let qrExpiradoTimer = null;
+let modoPassivoTimeout = null;
+let modoPassivoInterval = null;
 
 // Carrega/salva chats autorizados (evita disparar em conversas aleatórias)
 function carregarChatsAtivos() {
@@ -446,6 +450,7 @@ async function enviarAudioSticker(sock, jid, webpPath, isAnimated, audioInfo = n
       messageId = await enviarComId();
     }
     console.log(`✅ Audio Sticker (${isAnimated ? 'animado' : 'estático'}) enviado para ${jid} | ID: ${messageId}`);
+    void aplicarModoPassivo(sock, 'pos-sticker');
   } finally {
     pendingAudioStickers.delete(key);
   }
@@ -496,6 +501,7 @@ function extrairOrigemAudio(content) {
 async function enviarTexto(sock, jid, text) {
   const sent = await sock.sendMessage(jid, { text });
   registrarIdEnviado(sent?.key?.id);
+  void aplicarModoPassivo(sock, 'pos-texto');
   return sent;
 }
 
@@ -789,6 +795,51 @@ function limparQrExpiradoTimer() {
   }
 }
 
+function limparModoPassivoTimers() {
+  if (modoPassivoTimeout) {
+    clearTimeout(modoPassivoTimeout);
+    modoPassivoTimeout = null;
+  }
+  if (modoPassivoInterval) {
+    clearInterval(modoPassivoInterval);
+    modoPassivoInterval = null;
+  }
+}
+
+async function aplicarModoPassivo(sock, motivo = 'manutencao') {
+  if (!sock || activeSock !== sock || !whatsappConectado) return;
+  try {
+    await sock.sendPresenceUpdate('unavailable');
+  } catch (err) {
+    console.warn(`⚠️  Falha ao enviar presença unavailable (${motivo}): ${err.message || err}`);
+  }
+  if (activeSock !== sock || !whatsappConectado) return;
+  try {
+    await sock.query({
+      tag: 'iq',
+      attrs: {
+        to: S_WHATSAPP_NET,
+        xmlns: 'passive',
+        type: 'set'
+      },
+      content: [{ tag: 'passive', attrs: {} }]
+    });
+  } catch (err) {
+    console.warn(`⚠️  Falha ao enviar IQ <passive/> (${motivo}): ${err.message || err}`);
+  }
+}
+
+function agendarModoPassivo(sock) {
+  limparModoPassivoTimers();
+  modoPassivoTimeout = setTimeout(() => {
+    modoPassivoTimeout = null;
+    void aplicarModoPassivo(sock, 'pos-conexao');
+  }, 1500);
+  modoPassivoInterval = setInterval(() => {
+    void aplicarModoPassivo(sock, 'periodico');
+  }, MODO_PASSIVO_INTERVAL_MS);
+}
+
 function agendarReconexao(delayMs = 3000) {
   limparQrExpiradoTimer();
   if (reconectando) return;
@@ -847,6 +898,7 @@ const webManager = criarGerenciadorWeb({
   }),
   reconnect: async () => {
     limparQrExpiradoTimer();
+    limparModoPassivoTimers();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -861,6 +913,7 @@ const webManager = criarGerenciadorWeb({
   },
   resetSession: async () => {
     limparQrExpiradoTimer();
+    limparModoPassivoTimers();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -877,6 +930,7 @@ const webManager = criarGerenciadorWeb({
   },
   logout: async () => {
     limparQrExpiradoTimer();
+    limparModoPassivoTimers();
     const oldSock = activeSock;
     activeSock = null;
     whatsappConectado = false;
@@ -937,6 +991,7 @@ function sincronizarContatosLista(lista = []) {
 }
 
 async function iniciar() {
+  limparModoPassivoTimers();
   await garantirAudioPronto();
 
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
@@ -1152,6 +1207,7 @@ async function iniciar() {
     }
 
     if (connection === 'close') {
+      limparModoPassivoTimers();
       whatsappConectado = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       const motivo = lastDisconnect?.error?.message || 'desconhecido';
@@ -1212,6 +1268,7 @@ async function iniciar() {
       if (!webManager.jaSincronizouAgenda()) {
         sincronizarAgendaWhatsApp(sock, state);
       }
+      agendarModoPassivo(sock);
     }
   });
 }
